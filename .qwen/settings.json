@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(prodocs.lceda.cn)",
+      "WebFetch(easyeda.com)",
+      "Bash(npm run *)",
+      "Bash(dir)"
+    ]
+  },
+  "$version": 3
+}

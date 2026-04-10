@@ -11,13 +11,59 @@
  * https://prodocs.lceda.cn/cn/api/guide/
  */
 import * as extensionConfig from '../extension.json';
+import { executeSilkscreenFill } from './modules/silkscreen-fill';
 
 // eslint-disable-next-line unused-imports/no-unused-vars
-export function activate(status?: 'onStartupFinished', arg?: string): void {}
+export function activate(status?: 'onStartupFinished', arg?: string): void {
+	// eslint-disable-next-line no-console
+	console.log('丝印层填充插件已激活');
+}
 
 export function about(): void {
 	eda.sys_Dialog.showInformationMessage(
 		eda.sys_I18n.text('EasyEDA extension SDK v', undefined, undefined, extensionConfig.version),
 		eda.sys_I18n.text('About'),
 	);
+}
+
+/**
+ * 丝印层填充功能
+ * 在PCB编辑器中通过菜单调用此方法
+ */
+export async function silkscreenFill(): Promise<void> {
+	try {
+		// eslint-disable-next-line no-console
+		console.log('开始执行丝印层填充...');
+
+		// 显示开始提示
+		eda.sys_Dialog.showInformationMessage(
+			'开始丝印层填充，请按照提示操作',
+			'丝印层填充',
+		);
+
+		// 执行填充
+		const result = await executeSilkscreenFill({
+			silkscreenLayerId: 3, // 顶层丝印层
+			fillLayerId: 3, // 填充到顶层丝印层
+			strokeWidth: 0.1, // 丝印线宽
+			fillMode: 'solid', // 实心填充
+		});
+
+		// 显示完成提示
+		eda.sys_Dialog.showInformationMessage(
+			`丝印层填充完成！\n成功创建 ${result.length} 个填充区域`,
+			'完成',
+		);
+
+		// eslint-disable-next-line no-console
+		console.log('丝印层填充完成，创建了', result.length, '个填充区域');
+	}
+	catch (error) {
+		console.error('丝印层填充失败:', error);
+
+		eda.sys_Dialog.showInformationMessage(
+			`丝印层填充失败: ${error instanceof Error ? error.message : '未知错误'}`,
+			'错误',
+		);
+	}
 }

@@ -1,10 +1,10 @@
 {
-	"name": "pro-api-sdk",
+	"name": "silkscreen-fill",
 	"uuid": "ed90c4943d4147e49d8a91826b1dacde",
-	"displayName": "PRO API SDK",
-	"description": "嘉立创EDA & EasyEDA 专业版扩展 API 开发工具",
+	"displayName": "丝印层填充 (Silkscreen Fill)",
+	"description": "在PCB编辑器中使用 clipper.js 完成丝印层的布尔运算并生成填充区域。",
 	"version": "1.0.0",
-	"publisher": "",
+	"publisher": "JLCEDA",
 	"engines": {
 		"eda": "^3.0.0"
 	},
@@ -15,25 +15,30 @@
 	},
 	"categories": "Other",
 	"keywords": [
-		"SDK"
+		"PCB",
+		"Silkscreen",
+		"Fill",
+		"Clipper"
 	],
 	"images": {
 		"logo": "./images/logo.png"
 	},
 	"homepage": "",
 	"bugs": "",
-	"activationEvents": {},
+	"activationEvents": {
+		"onStartupFinished": true
+	},
 	"entry": "./dist/index",
 	"dependentExtensions": {},
 	"headerMenus": {
 		"home": [
 			{
-				"id": "API SDK",
-				"title": "API SDK",
+				"id": "SilkscreenTools",
+				"title": "丝印工具",
 				"menuItems": [
 					{
 						"id": "About",
-						"title": "About...",
+						"title": "关于...",
 						"registerFn": "about"
 					}
 				]
@@ -41,12 +46,12 @@
 		],
 		"sch": [
 			{
-				"id": "API SDK",
-				"title": "API SDK",
+				"id": "SilkscreenTools",
+				"title": "丝印工具",
 				"menuItems": [
 					{
 						"id": "About",
-						"title": "About...",
+						"title": "关于...",
 						"registerFn": "about"
 					}
 				]
@@ -54,13 +59,18 @@
 		],
 		"pcb": [
 			{
-				"id": "API SDK",
-				"title": "API SDK",
+				"id": "SilkscreenTools",
+				"title": "丝印工具",
 				"menuItems": [
 					{
 						"id": "About",
-						"title": "About...",
+						"title": "关于...",
 						"registerFn": "about"
+					},
+					{
+						"id": "SilkscreenFill",
+						"title": "丝印层填充",
+						"registerFn": "silkscreenFill"
 					}
 				]
 			}
