@@ -36,8 +36,8 @@ export interface SilkscreenFillConfig {
  * 默认配置
  */
 const DEFAULT_CONFIG: SilkscreenFillConfig = {
-	silkscreenLayerId: 3, // 顶层丝印层
-	fillLayerId: 3,
+	silkscreenLayerId: EPCB_LayerId.TOP_SILKSCREEN, // 顶层丝印层
+	fillLayerId: EPCB_LayerId.TOP_SILKSCREEN,
 	strokeWidth: 0.1,
 	fillMode: 'solid',
 };

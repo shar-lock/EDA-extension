@@ -43,8 +43,8 @@ export async function silkscreenFill(): Promise<void> {
 
 		// 执行填充
 		const result = await executeSilkscreenFill({
-			silkscreenLayerId: 3, // 顶层丝印层
-			fillLayerId: 3, // 填充到顶层丝印层
+			silkscreenLayerId: EPCB_LayerId.TOP_SILKSCREEN, // 顶层丝印层
+			fillLayerId: EPCB_LayerId.TOP_SILKSCREEN, // 填充到顶层丝印层
 			strokeWidth: 0.1, // 丝印线宽
 			fillMode: 'solid', // 实心填充
 		});

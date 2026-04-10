@@ -43,10 +43,19 @@ export async function createFilledRegions(
 			}
 
 			try {
-				// 1. 将 Point[] 转换为 TPCB_PolygonSourceArray [x1, y1, x2, y2, ...]
+				// 1. 将 Point[] 转换为 TPCB_PolygonSourceArray
+				// 格式: [x1, y1, 'L', x2, y2, x3, y3, ...]
 				const sourceArray: any[] = [];
-				for (const p of polygon) {
-					sourceArray.push(p.x, p.y);
+				if (polygon.length >= 1) {
+					// 起始点
+					sourceArray.push(polygon[0].x, polygon[0].y);
+					// 如果有点，添加 'L' 命令及后续点
+					if (polygon.length > 1) {
+						sourceArray.push('L');
+						for (let j = 1; j < polygon.length; j++) {
+							sourceArray.push(polygon[j].x, polygon[j].y);
+						}
+					}
 				}
 
 				// 2. 创建 IPCB_Polygon

@@ -68,12 +68,14 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 		for (const polyline of polylines) {
 			const polyObj = polyline.getState_Polygon();
 			const points = polyObj.getSource();
+			// 转换 TPCB_PolygonSourceArray 为点数组，跳过命令字符 ('L', 'ARC' 等)
 			const parsedPoints: { x: number; y: number }[] = [];
 			for (let i = 0; i < points.length; i++) {
 				if (typeof points[i] === 'number' && typeof points[i + 1] === 'number') {
 					parsedPoints.push({ x: points[i] as number, y: points[i + 1] as number });
 					i++;
 				}
+				// 如果是命令字符，跳过即可，下一轮循环会检查数字
 			}
 
 			primitives.push({
@@ -89,6 +91,7 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 		for (const fill of fills) {
 			const polyObj = fill.getState_ComplexPolygon();
 			const points = polyObj.getSource();
+			// 转换 TPCB_PolygonSourceArray 为点数组，跳过命令字符
 			const parsedPoints: { x: number; y: number }[] = [];
 			for (let i = 0; i < points.length; i++) {
 				if (typeof points[i] === 'number' && typeof points[i + 1] === 'number') {
