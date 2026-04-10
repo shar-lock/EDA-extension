@@ -48,6 +48,7 @@ export const SILKSCREEN_FILL_CONFIG: SilkscreenFillConfig = {
 	 * 使用十六进制颜色值，如 '#FF0000'
 	 */
 	color: undefined,
+
 };
 
 /**

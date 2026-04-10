@@ -1,51 +1,50 @@
 [简体中文](#) | [English](./README.en.md) | [繁體中文](./README.zh-Hant.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
 
-# pro-api-sdk
+# 丝印层填充 (Silkscreen Fill)
 
-嘉立创EDA & EasyEDA 专业版扩展 API 开发工具
+嘉立创EDA专业版插件：在PCB编辑器中使用 clipper.js 完成丝印层的布尔运算并生成填充区域。
 
-<a href="https://github.com/easyeda/pro-api-sdk" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/stars/easyeda/pro-api-sdk" alt="GitHub Repo Stars" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://github.com/easyeda/pro-api-sdk/issues" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/issues/easyeda/pro-api-sdk" alt="GitHub Issues" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://github.com/easyeda/pro-api-sdk" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/repo-size/easyeda/pro-api-sdk" alt="GitHub Repo Size" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://choosealicense.com/licenses/apache-2.0/" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/license/easyeda/pro-api-sdk" alt="GitHub License" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://www.npmjs.com/package/@jlceda/pro-api-types" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/npm/v/%40jlceda%2Fpro-api-types?label=pro-api-types" alt="NPM Version" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://www.npmjs.com/package/@jlceda/pro-api-types" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/npm/d18m/%40jlceda%2Fpro-api-types" alt="NPM Downloads" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>
+## 功能介绍
 
-> [!NOTE]
->
-> 详细开发文档请访问：[https://prodocs.lceda.cn/cn/api/guide/](https://prodocs.lceda.cn/cn/api/guide/)
+本插件旨在解决在 PCB 丝印层上进行复杂布尔运算的问题。通过使用高性能的多边形运算库 **clipper.js**，用户可以轻松地在丝印层生成避开现有丝印图元的填充区域。
 
-## 进入开发
+### 主要特性
 
-本开发工具组包含了用于开发 [嘉立创EDA专业版](https://pro.lceda.cn/) 扩展包的所有环境和工具，并内置了 ESLint 的推荐规则。
+- **高精度布尔运算**：使用 `clipper.js` 进行稳定的差集（Difference）、并集（Union）和交集（Intersection）运算。
+- **多图元支持**：支持处理丝印层上的直线（Line）、圆弧（Arc）、折线（Polyline）、填充（Fill）以及文本（String）等多种图元。
+- **智能交互**：支持通过框选选定区域，自动计算该区域内所有丝印图元的包围盒并进行扣除。
+- **专业版 API 适配**：完全适配嘉立创EDA专业版（JLCEDA Pro）扩展 API。
 
-1. 克隆 [pro-api-sdk](https://github.com/easyeda/pro-api-sdk) 项目仓库到本地
+## 使用说明
 
-    Gitee:
+1. **启动插件**：在 PCB 编辑器顶部菜单栏找到 **丝印工具 -> 丝印层填充**。
+2. **选择区域**：在画布上点击并拖动以进行矩形框选，选定你希望处理的丝印区域。
+3. **自动生成**：插件将自动提取该区域内的丝印图元，计算选区与丝印图元的差集，并在顶层丝印层生成填充区域。
 
-    ```shell
-    git clone --depth=1 https://gitee.com/jlceda/pro-api-sdk.git
-    ```
+## 开发与编译
 
-    GitHub:
+如果你希望基于本项目进行二次开发：
 
-    ```shell
-    git clone --depth=1 https://github.com/easyeda/pro-api-sdk.git
-    ```
-
-2. 初始化开发环境（安装依赖）
+1. **安装依赖**
 
     ```shell
     npm install
     ```
 
-3. 进行些许变更 ...
-
-4. 编译扩展包
+2. **编译项目**
 
     ```shell
     npm run build
     ```
 
-5. 在 嘉立创EDA专业版 中安装生成在 `./build/dist/` 下的扩展包
+3. **安装扩展**：在嘉立创EDA专业版中，进入“扩展设置” -> “导入”，选择编译生成的 `./build/dist/` 目录。
+
+## 技术栈
+
+- [Clipper.js](https://github.com/Doodle3D/clipper-js) - 多边形布尔运算引擎
+- [@jlceda/pro-api-types](https://www.npmjs.com/package/@jlceda/pro-api-types) - 嘉立创EDA专业版 API 类型定义
+- TypeScript & esbuild
 
 ## 开源许可
 
-<a href="https://choosealicense.com/licenses/apache-2.0/" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/license/easyeda/pro-api-sdk" alt="GitHub License" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>
-
-本开发工具组使用 [Apache License 2.0](https://choosealicense.com/licenses/apache-2.0/) 开源许可协议，你仅可以将 **嘉立创EDA**、**EasyEDA** 商标信息用于依托于本工具组开发的扩展包的 **功能描述部分** 和 **开源发布的标题部分**。
+本项目使用 [Apache License 2.0](https://choosealicense.com/licenses/apache-2.0/) 开源许可协议。

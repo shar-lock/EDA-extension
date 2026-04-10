@@ -1,43 +1,50 @@
 [简体中文](./README.md) | [English](#) | [繁體中文](./README.zh-Hant.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
 
-# pro-api-sdk
+# Silkscreen Fill
 
-JLCEDA & EasyEDA Pro Extension API Development Kit
+JLCEDA Pro extension: Use clipper.js to perform boolean operations on the silkscreen layer and generate fill regions in the PCB editor.
 
-<a href="https://github.com/easyeda/pro-api-sdk" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/stars/easyeda/pro-api-sdk" alt="GitHub Repo Stars" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://github.com/easyeda/pro-api-sdk/issues" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/issues/easyeda/pro-api-sdk" alt="GitHub Issues" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://github.com/easyeda/pro-api-sdk" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/repo-size/easyeda/pro-api-sdk" alt="GitHub Repo Size" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://choosealicense.com/licenses/apache-2.0/" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/license/easyeda/pro-api-sdk" alt="GitHub License" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://www.npmjs.com/package/@jlceda/pro-api-types" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/npm/v/%40jlceda%2Fpro-api-types?label=pro-api-types" alt="NPM Version" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>&nbsp;<a href="https://www.npmjs.com/package/@jlceda/pro-api-types" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/npm/d18m/%40jlceda%2Fpro-api-types" alt="NPM Downloads" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>
+## Introduction
 
-> [!NOTE]
->
-> For more information on the development of EasyEDA Pro Extension, please visit: [https://prodocs.easyeda.com/en/api/guide/](https://prodocs.easyeda.com/en/api/guide/)
+This plugin aims to solve the problem of complex boolean operations on the PCB silkscreen layer. By using the high-performance polygon operation library **clipper.js**, users can easily generate fill regions on the silkscreen layer that avoid existing silkscreen primitives.
 
-## Enter Development
+### Key Features
 
-This development tool set contains all the environments and tools for developing the [EasyEDA Pro Edition](https://pro.easyeda.com/) extension package, and has built-in recommended rules for ESLint.
+- **High-Precision Boolean Operations**: Uses `clipper.js` for stable Difference, Union, and Intersection operations.
+- **Multi-Primitive Support**: Supports Line, Arc, Polyline, Fill, and String primitives on the silkscreen layer.
+- **Smart Interaction**: Supports rectangular selection on the canvas, automatically calculating the bounding box (BBox) of all silkscreen primitives within the area for deduction.
+- **JLCEDA Pro API Compatibility**: Fully adapted to the JLCEDA Pro extension API.
 
-1. Clone the [pro-api-sdk](https://github.com/easyeda/pro-api-sdk) project repository to your local computer
+## Usage
 
-    ```shell
-    git clone --depth=1 https://github.com/easyeda/pro-api-sdk.git
-    ```
+1. **Start the Extension**: Find **Silkscreen Tools -> Silkscreen Fill** in the top menu bar of the PCB editor.
+2. **Select Area**: Click and drag on the canvas to make a rectangular selection of the area you want to process.
+3. **Automatic Generation**: The plugin will automatically extract the silkscreen primitives in the area, calculate the difference between the selection and the primitives, and generate a fill region on the top silkscreen layer.
 
-2. Initializing the development environment (installing dependencies)
+## Development & Compilation
+
+If you wish to develop based on this project:
+
+1. **Install Dependencies**
 
     ```shell
     npm install
     ```
 
-3. Make your changes ...
-
-4. Compile the extension package
+2. **Compile Project**
 
     ```shell
     npm run build
     ```
 
-5. Install the extension package generated under `./build/dist/` in EasyEDA Pro Edition
+3. **Install Extension**: In JLCEDA Pro, go to "Extension Settings" -> "Import", and select the compiled `./build/dist/` directory.
 
-## Open-source License
+## Tech Stack
 
-<a href="https://choosealicense.com/licenses/apache-2.0/" style="vertical-align: inherit;" target="_blank"><img src="https://img.shields.io/github/license/easyeda/pro-api-sdk" alt="GitHub License" class="not-medium-zoom-image" style="display: inline; vertical-align: inherit;" /></a>
+- [Clipper.js](https://github.com/Doodle3D/clipper-js) - Polygon boolean operation engine
+- [@jlceda/pro-api-types](https://www.npmjs.com/package/@jlceda/pro-api-types) - JLCEDA Pro API type definitions
+- TypeScript & esbuild
 
-This development tool uses the [Apache License 2.0](https://choosealicense.com/licenses/apache-2.0/) open source license agreement. You can only use the **嘉立创EDA** and **EasyEDA** trademark information for the **function description part** and **open source release title part** of the extension package developed based on this tool.
+## License
+
+This project is licensed under the [Apache License 2.0](https://choosealicense.com/licenses/apache-2.0/).

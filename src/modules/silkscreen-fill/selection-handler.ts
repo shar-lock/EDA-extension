@@ -48,42 +48,8 @@ export async function waitForUserSelection(): Promise<SelectionResult> {
 	return new Promise((resolve) => {
 		try {
 			// 显示提示信息
-			eda.sys_Dialog.showInformationMessage(
-				'请在PCB编辑器中进行矩形框选，选择需要处理的区域',
-				'丝印层填充',
-			);
-
-			const EVENT_ID = 'silkscreen_fill_selection_waiter';
-
-			// 监听选择事件
-			const handleSelection = async () => {
-				try {
-					// 移除事件监听
-					eda.pcb_Event.removeEventListener(EVENT_ID);
-
-					// 获取当前选区
-					const result = await getCurrentSelection();
-					resolve(result);
-				}
-				catch (error) {
-					resolve({
-						success: false,
-						error: error instanceof Error ? error.message : '获取选区失败',
-					});
-				}
-			};
-
-			// 注册事件监听 (SELECTED)
-			eda.pcb_Event.addMouseEventListener(EVENT_ID, EPCB_MouseEventType.SELECTED, handleSelection, true);
-
-			// 设置超时（30秒）
-			setTimeout(() => {
-				eda.pcb_Event.removeEventListener(EVENT_ID);
-				resolve({
-					success: false,
-					error: '框选超时，请重试',
-				});
-			}, 30000);
+			const result = getCurrentSelection();
+			resolve(result);
 		}
 		catch (error) {
 			resolve({
@@ -112,6 +78,7 @@ export async function getCurrentSelection(): Promise<SelectionResult> {
 
 		// 获取选中图元的边界框
 		const bbox = await eda.pcb_Primitive.getPrimitivesBBox(selectedPrimitives);
+		console.warn('选中对象的边界框:', bbox);
 
 		if (!bbox) {
 			return {

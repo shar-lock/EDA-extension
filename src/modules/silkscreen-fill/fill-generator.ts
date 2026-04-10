@@ -57,6 +57,7 @@ export async function createFilledRegions(
 						}
 					}
 				}
+				console.warn('转换后的多边形数据:', sourceArray);
 
 				// 2. 创建 IPCB_Polygon
 				const polyObj = eda.pcb_MathPolygon.createPolygon(sourceArray);
@@ -65,14 +66,15 @@ export async function createFilledRegions(
 					continue;
 				}
 
+				console.warn('创建的多边形:', polyObj);
 				// 3. 创建填充图元
 				// JLCEDA Pro 中 FilledRegion 对应 eda.pcb_PrimitiveFill
 				const fill = await eda.pcb_PrimitiveFill.create(
-					config.layerId,
+					EPCB_LayerId.TOP_SILKSCREEN,
 					polyObj,
-					config.netName || '',
-					config.fillMode === 'hatched' ? EPCB_PrimitiveFillMode.MESH : EPCB_PrimitiveFillMode.SOLID,
 				);
+
+				console.warn('创建的填充图元:', fill);
 
 				if (fill) {
 					createdIds.push(fill.getState_PrimitiveId());
