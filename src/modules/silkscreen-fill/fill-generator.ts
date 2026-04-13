@@ -4,6 +4,7 @@
  * 将布尔运算结果转换为 PCB FilledRegion 并添加到文档中
  */
 
+// EPCB_LayerId 和 EPCB_PrimitiveFillMode 在 @jlceda/pro-api-types 中通过 declare global 声明，无需导入
 import type { Polygon } from './utils/clipper';
 
 /**
@@ -45,19 +46,23 @@ export async function createFilledRegions(
 			try {
 				// 1. 将 Point[] 转换为 TPCB_PolygonSourceArray
 				// 格式: [x1, y1, 'L', x2, y2, x3, y3, ...]
+				// 注意: TPCB_PolygonSourceArray 是 (number | 'L' | 'ARC' | 'C')[] 类型
 				const sourceArray: any[] = [];
-				if (polygon.length >= 1) {
-					// 起始点
+				if (polygon.length >= 3) {
+					// 从第一个点开始
 					sourceArray.push(polygon[0].x, polygon[0].y);
-					// 如果有点，添加 'L' 命令及后续点
-					if (polygon.length > 1) {
-						sourceArray.push('L');
-						for (let j = 1; j < polygon.length; j++) {
-							sourceArray.push(polygon[j].x, polygon[j].y);
-						}
+					// 添加线段命令和后续点
+					for (let j = 1; j < polygon.length; j++) {
+						sourceArray.push('L', polygon[j].x, polygon[j].y);
 					}
+					// 闭合多边形（回到起点）
+					sourceArray.push('L', polygon[0].x, polygon[0].y);
 				}
-				console.warn('转换后的多边形数据:', sourceArray);
+
+				if (sourceArray.length === 0) {
+					console.warn('跳过空多边形');
+					continue;
+				}
 
 				// 2. 创建 IPCB_Polygon
 				const polyObj = eda.pcb_MathPolygon.createPolygon(sourceArray);
@@ -66,15 +71,21 @@ export async function createFilledRegions(
 					continue;
 				}
 
-				console.warn('创建的多边形:', polyObj);
-				// 3. 创建填充图元
-				// JLCEDA Pro 中 FilledRegion 对应 eda.pcb_PrimitiveFill
-				const fill = await eda.pcb_PrimitiveFill.create(
-					EPCB_LayerId.TOP_SILKSCREEN,
-					polyObj,
-				);
+				// 3. 获取填充模式
+				const fillModeValue = config.fillMode === 'hatched'
+					? EPCB_PrimitiveFillMode.MESH
+					: EPCB_PrimitiveFillMode.SOLID;
 
-				console.warn('创建的填充图元:', fill);
+				// 4. 创建填充图元
+				// 参数: layer, complexPolygon, net?, fillMode?, lineWidth?, primitiveLock?
+				const fill = await eda.pcb_PrimitiveFill.create(
+					config.layerId,
+					polyObj,
+					config.netName,
+					fillModeValue,
+					0, // lineWidth
+					false, // primitiveLock
+				);
 
 				if (fill) {
 					createdIds.push(fill.getState_PrimitiveId());

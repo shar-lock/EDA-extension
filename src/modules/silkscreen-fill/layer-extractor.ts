@@ -5,7 +5,14 @@
  * 并将它们转换为多边形格式供 Clipper 使用
  */
 
-import type { Polygon } from './utils/clipper';
+import type { Point, Polygon } from './utils/clipper';
+import {
+	arcToPolygon,
+	bboxesIntersect,
+	getPolygonBBox,
+	lineToPolygon,
+} from './utils/clipper';
+import { captureError, DIAGNOSTIC_MODE, diagnosticLog, endTimer, logAPICall, logAPIReturn, startTimer } from './utils/diagnostic';
 
 /**
  * 丝印图元对象
@@ -19,6 +26,10 @@ export interface SilkscreenPrimitive {
 	data: any;
 	/** 图层ID */
 	layerId: number;
+	/** 转换后的多边形（缓存） */
+	cachedPolygons?: Polygon[];
+	/** 边界框缓存 */
+	cachedBBox?: { minX: number; minY: number; maxX: number; maxY: number };
 }
 
 /**
@@ -27,27 +38,49 @@ export interface SilkscreenPrimitive {
  * @returns 图元数组
  */
 export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPrimitive[]> {
+	logAPICall('getLayerPrimitives', [layerId]);
+	startTimer('getLayerPrimitives');
+	diagnosticLog(`开始获取图层 ${layerId} 的图元`);
 	const primitives: SilkscreenPrimitive[] = [];
 
 	try {
 		// 1. 获取所有直线 (Line)
-		const lines = await eda.pcb_PrimitiveLine.getAll(undefined, layerId);
+		logAPICall('eda.pcb_PrimitiveLine.getAll', [undefined, layerId, false]);
+		const lines = await eda.pcb_PrimitiveLine.getAll(undefined, layerId, false);
+		logAPIReturn('eda.pcb_PrimitiveLine.getAll', lines);
+		diagnosticLog(`获取直线数量: ${lines.length}`);
+		diagnosticLog(`直线详情:`, lines.map(l => ({
+			id: l.getState_PrimitiveId(),
+			start: { x: l.getState_StartX(), y: l.getState_StartY() },
+			end: { x: l.getState_EndX(), y: l.getState_EndY() },
+		})));
+
 		for (const line of lines) {
 			primitives.push({
 				id: line.getState_PrimitiveId(),
 				type: 'track',
 				data: {
-					points: [
-						{ x: line.getState_StartX(), y: line.getState_StartY() },
-						{ x: line.getState_EndX(), y: line.getState_EndY() },
-					],
+					startX: line.getState_StartX(),
+					startY: line.getState_StartY(),
+					endX: line.getState_EndX(),
+					endY: line.getState_EndY(),
 				},
 				layerId,
 			});
 		}
 
 		// 2. 获取所有圆弧 (Arc)
-		const arcs = await eda.pcb_PrimitiveArc.getAll(undefined, layerId);
+		logAPICall('eda.pcb_PrimitiveArc.getAll', [undefined, layerId, false]);
+		const arcs = await eda.pcb_PrimitiveArc.getAll(undefined, layerId, false);
+		logAPIReturn('eda.pcb_PrimitiveArc.getAll', arcs);
+		diagnosticLog(`获取圆弧数量: ${arcs.length}`);
+		diagnosticLog(`圆弧详情:`, arcs.map(a => ({
+			id: a.getState_PrimitiveId(),
+			start: { x: a.getState_StartX(), y: a.getState_StartY() },
+			end: { x: a.getState_EndX(), y: a.getState_EndY() },
+			angle: a.getState_ArcAngle(),
+		})));
+
 		for (const arc of arcs) {
 			primitives.push({
 				id: arc.getState_PrimitiveId(),
@@ -64,41 +97,51 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 		}
 
 		// 3. 获取所有折线 (Polyline)
-		const polylines = await eda.pcb_PrimitivePolyline.getAll(undefined, layerId);
+		logAPICall('eda.pcb_PrimitivePolyline.getAll', [undefined, layerId, false]);
+		const polylines = await eda.pcb_PrimitivePolyline.getAll(undefined, layerId, false);
+		logAPIReturn('eda.pcb_PrimitivePolyline.getAll', polylines);
+		diagnosticLog(`获取折线数量: ${polylines.length}`);
+
 		for (const polyline of polylines) {
 			const polyObj = polyline.getState_Polygon();
 			const points = polyObj.getSource();
-			// 转换 TPCB_PolygonSourceArray 为点数组，跳过命令字符 ('L', 'ARC' 等)
-			const parsedPoints: { x: number; y: number }[] = [];
+			// 转换 TPCB_PolygonSourceArray 为点数组
+			const parsedPoints: Point[] = [];
 			for (let i = 0; i < points.length; i++) {
 				if (typeof points[i] === 'number' && typeof points[i + 1] === 'number') {
 					parsedPoints.push({ x: points[i] as number, y: points[i + 1] as number });
 					i++;
 				}
-				// 如果是命令字符，跳过即可，下一轮循环会检查数字
 			}
+
+			diagnosticLog(`折线 ${polyline.getState_PrimitiveId()} 点数: ${parsedPoints.length}`);
 
 			primitives.push({
 				id: polyline.getState_PrimitiveId(),
-				type: 'track',
+				type: 'polygon',
 				data: { points: parsedPoints },
 				layerId,
 			});
 		}
 
 		// 4. 获取所有填充 (Fill)
-		const fills = await eda.pcb_PrimitiveFill.getAll(layerId);
+		logAPICall('eda.pcb_PrimitiveFill.getAll', [layerId, undefined, false]);
+		const fills = await eda.pcb_PrimitiveFill.getAll(layerId, undefined, false);
+		logAPIReturn('eda.pcb_PrimitiveFill.getAll', fills);
+		diagnosticLog(`获取填充数量: ${fills.length}`);
+
 		for (const fill of fills) {
 			const polyObj = fill.getState_ComplexPolygon();
 			const points = polyObj.getSource();
-			// 转换 TPCB_PolygonSourceArray 为点数组，跳过命令字符
-			const parsedPoints: { x: number; y: number }[] = [];
+			const parsedPoints: Point[] = [];
 			for (let i = 0; i < points.length; i++) {
 				if (typeof points[i] === 'number' && typeof points[i + 1] === 'number') {
 					parsedPoints.push({ x: points[i] as number, y: points[i + 1] as number });
 					i++;
 				}
 			}
+
+			diagnosticLog(`填充 ${fill.getState_PrimitiveId()} 点数: ${parsedPoints.length}`);
 
 			primitives.push({
 				id: fill.getState_PrimitiveId(),
@@ -109,10 +152,17 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 		}
 
 		// 5. 获取所有文本 (String)
-		const strings = await eda.pcb_PrimitiveString.getAll(layerId);
+		logAPICall('eda.pcb_PrimitiveString.getAll', [layerId, false]);
+		const strings = await eda.pcb_PrimitiveString.getAll(layerId, false);
+		logAPIReturn('eda.pcb_PrimitiveString.getAll', strings);
+		diagnosticLog(`获取文本数量: ${strings.length}`);
+
 		for (const str of strings) {
+			logAPICall('eda.pcb_Primitive.getPrimitivesBBox', [[str]]);
 			const bbox = await eda.pcb_Primitive.getPrimitivesBBox([str]);
+			logAPIReturn('eda.pcb_Primitive.getPrimitivesBBox', bbox);
 			if (bbox) {
+				diagnosticLog(`文本 ${str.getState_PrimitiveId()} 边界框:`, bbox);
 				primitives.push({
 					id: str.getState_PrimitiveId(),
 					type: 'text',
@@ -121,7 +171,7 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 							x: bbox.minX,
 							y: bbox.minY,
 							width: bbox.maxX - bbox.minX,
-							height: bbox.maxY - bbox.minY,
+							maxY: bbox.maxY,
 						},
 					},
 					layerId,
@@ -129,296 +179,198 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 			}
 		}
 
+		endTimer('getLayerPrimitives', '获取图层图元总耗时: ');
+		diagnosticLog(`图层 ${layerId} 图元获取完成: ${primitives.length} 个图元`);
+		logAPIReturn('getLayerPrimitives', primitives.length);
+
 		return primitives;
 	}
 	catch (error) {
-		console.error('获取图层图元失败:', error);
+		captureError(error, 'getLayerPrimitives');
+		endTimer('getLayerPrimitives', '获取图层图元耗时（含错误）: ');
+		diagnosticLog(`图层 ${layerId} 图元获取失败:`, error);
 		throw error;
 	}
 }
 
 /**
+ * 获取图元的边界框
+ */
+function getPrimitiveBBox(primitive: SilkscreenPrimitive): { minX: number; minY: number; maxX: number; maxY: number } | null {
+	if (primitive.cachedBBox)
+		return primitive.cachedBBox;
+
+	switch (primitive.type) {
+		case 'track': {
+			const { startX, startY, endX, endY, lineWidth } = primitive.data;
+			const halfWidth = lineWidth / 2;
+			return {
+				minX: Math.min(startX, endX) - halfWidth,
+				minY: Math.min(startY, endY) - halfWidth,
+				maxX: Math.max(startX, endX) + halfWidth,
+				maxY: Math.max(startY, endY) + halfWidth,
+			};
+		}
+		case 'arc': {
+			// 简化处理：使用起点和终点的边界框
+			const { startX, startY, endX, endY, lineWidth } = primitive.data;
+			const halfWidth = lineWidth / 2;
+			return {
+				minX: Math.min(startX, endX) - halfWidth,
+				minY: Math.min(startY, endY) - halfWidth,
+				maxX: Math.max(startX, endX) + halfWidth,
+				maxY: Math.max(startY, endY) + halfWidth,
+			};
+		}
+		case 'text': {
+			if (primitive.data.boundingBox) {
+				return {
+					minX: primitive.data.boundingBox.x,
+					minY: primitive.data.boundingBox.y,
+					maxX: primitive.data.boundingBox.x + primitive.data.boundingBox.width,
+					maxY: primitive.data.boundingBox.y + primitive.data.boundingBox.height,
+				};
+			}
+			return null;
+		}
+		case 'polygon': {
+			if (primitive.data.points && primitive.data.points.length > 0) {
+				return getPolygonBBox(primitive.data.points);
+			}
+			return null;
+		}
+		default:
+			return null;
+	}
+}
+
+/**
  * 将丝印图元转换为多边形
- * @param primitive 丝印图元
- * @param strokeWidth 线宽（用于将线条转换为面）
- * @returns 多边形数组
  */
-export function primitiveToPolygons(primitive: SilkscreenPrimitive, strokeWidth: number = 0.1): Polygon[] {
+export function primitiveToPolygons(primitive: SilkscreenPrimitive): Polygon[] {
+	// 检查缓存
+	if (primitive.cachedPolygons) {
+		return primitive.cachedPolygons;
+	}
+
+	const startTime = performance.now();
 	const polygons: Polygon[] = [];
 
-	try {
-		switch (primitive.type) {
-			case 'track':
-				polygons.push(...trackToPolygons(primitive.data, strokeWidth));
-				break;
-			case 'arc':
-				polygons.push(...arcToPolygons(primitive.data, strokeWidth));
-				break;
-			case 'circle':
-				polygons.push(...circleToPolygons(primitive.data, strokeWidth));
-				break;
-			case 'rect':
-				polygons.push(...rectToPolygons(primitive.data, strokeWidth));
-				break;
-			case 'polygon':
-				polygons.push(...polygonToPolygons(primitive.data));
-				break;
-			case 'text':
-				// 文本需要特殊处理，暂时简化为包围盒
-				polygons.push(...textToPolygon(primitive.data, strokeWidth));
-				break;
-			default:
-				console.warn(`不支持的图元类型: ${primitive.type}`);
+	switch (primitive.type) {
+		case 'track': {
+			const { startX, startY, endX, endY, lineWidth } = primitive.data;
+			const trackPoly = lineToPolygon(startX, startY, endX, endY, lineWidth);
+			if (trackPoly.length > 0) {
+				polygons.push(trackPoly);
+			}
+			break;
 		}
-	}
-	catch (error) {
-		console.error(`转换图元 ${primitive.id} 失败:`, error);
-	}
-
-	return polygons;
-}
-
-/**
- * 线条转多边形（通过偏移生成矩形）
- */
-function trackToPolygons(track: any, strokeWidth: number): Polygon[] {
-	const polygons: Polygon[] = [];
-
-	if (!track.points || track.points.length < 2) {
-		return polygons;
-	}
-
-	// 对于多段线，逐段转换为矩形
-	for (let i = 0; i < track.points.length - 1; i++) {
-		const p1 = track.points[i];
-		const p2 = track.points[i + 1];
-
-		const rect = lineToRect(p1.x, p1.y, p2.x, p2.y, strokeWidth);
-		if (rect) {
-			polygons.push(rect);
+		case 'arc': {
+			const { startX, startY, endX, endY, arcAngle, lineWidth } = primitive.data;
+			// 将圆弧转换为多边形路径，然后给路径添加宽度
+			const arcPoints = arcToPolygon(startX, startY, endX, endY, arcAngle, 32);
+			if (arcPoints.length >= 2) {
+				// 将圆弧路径转换为有宽度的多边形
+				for (let i = 0; i < arcPoints.length - 1; i++) {
+					const segment = lineToPolygon(
+						arcPoints[i].x,
+						arcPoints[i].y,
+						arcPoints[i + 1].x,
+						arcPoints[i + 1].y,
+						lineWidth,
+					);
+					if (segment.length > 0) {
+						polygons.push(segment);
+					}
+				}
+			}
+			break;
 		}
-	}
-
-	return polygons;
-}
-
-/**
- * 将线段转换为矩形（带宽度）
- */
-function lineToRect(x1: number, y1: number, x2: number, y2: number, width: number): Polygon | null {
-	const dx = x2 - x1;
-	const dy = y2 - y1;
-	const len = Math.sqrt(dx * dx + dy * dy);
-
-	if (len === 0)
-		return null;
-
-	// 计算垂直方向
-	const nx = -dy / len * width / 2;
-	const ny = dx / len * width / 2;
-
-	return [
-		{ x: x1 + nx, y: y1 + ny },
-		{ x: x1 - nx, y: y1 - ny },
-		{ x: x2 - nx, y: y2 - ny },
-		{ x: x2 + nx, y: y2 + ny },
-	];
-}
-
-/**
- * 圆弧转多边形（近似为多边形）
- */
-function arcToPolygons(arc: any, strokeWidth: number): Polygon[] {
-	const polygons: Polygon[] = [];
-	const { startX, startY, endX, endY, arcAngle } = arc;
-
-	if (arcAngle === 0)
-		return polygons;
-
-	// 计算圆心和半径
-	const dx = endX - startX;
-	const dy = endY - startY;
-	const d = Math.sqrt(dx * dx + dy * dy);
-	if (d === 0)
-		return polygons;
-
-	const angleRad = arcAngle * Math.PI / 180;
-	const radius = Math.abs(d / (2 * Math.sin(angleRad / 2)));
-
-	// 中点
-	const midX = (startX + endX) / 2;
-	const midY = (startY + endY) / 2;
-
-	// 垂直向量
-	const h = d / (2 * Math.tan(angleRad / 2));
-	const nx = -(endY - startY) / d;
-	const ny = (endX - startX) / d;
-
-	// 圆心 (有两个可能，根据角度正负判断)
-	const centerX = midX - h * nx;
-	const centerY = midY - h * ny;
-
-	// 起始角度和终止角度
-	const startAngle = Math.atan2(startY - centerY, startX - centerX);
-	const endAngle = startAngle + angleRad;
-
-	// 简化处理：将圆弧近似为多边形线段
-	const segments = Math.max(8, Math.floor(Math.abs(arcAngle) / 5));
-	const points: { x: number; y: number }[] = [];
-
-	for (let i = 0; i <= segments; i++) {
-		const angle = startAngle + (endAngle - startAngle) * i / segments;
-		points.push({
-			x: centerX + radius * Math.cos(angle),
-			y: centerY + radius * Math.sin(angle),
-		});
-	}
-
-	// 将圆弧路径转换为有宽度的多边形
-	for (let i = 0; i < points.length - 1; i++) {
-		const rect = lineToRect(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, strokeWidth);
-		if (rect) {
-			polygons.push(rect);
+		case 'polygon': {
+			if (primitive.data.points && primitive.data.points.length >= 3) {
+				polygons.push(primitive.data.points.map((p: any) => ({ x: p.x, y: p.y })));
+			}
+			break;
 		}
+		case 'text': {
+			// 文本简化为包围盒
+			if (primitive.data.boundingBox) {
+				const { x, y, width, height } = primitive.data.boundingBox;
+				polygons.push([
+					{ x, y },
+					{ x: x + width, y },
+					{ x: x + width, y: y + height },
+					{ x, y: y + height },
+				]);
+			}
+			break;
+		}
+		default:
+			console.warn(`不支持的图元类型: ${primitive.type}`);
+	}
+
+	// 缓存结果
+	primitive.cachedPolygons = polygons;
+
+	const endTime = performance.now();
+	if (endTime - startTime > 10) {
+		diagnosticLog(`[PERF] primitiveToPolygons ${primitive.type} (${primitive.id}): ${(endTime - startTime).toFixed(2)}ms -> ${polygons.length} polygons`);
 	}
 
 	return polygons;
-}
-
-/**
- * 圆形转多边形
- */
-function circleToPolygons(circle: any, strokeWidth: number): Polygon[] {
-	const polygons: Polygon[] = [];
-
-	if (circle.radius <= 0)
-		return polygons;
-
-	// 圆形边框 - 近似为多边形环
-	const segments = 64;
-	const outerPoints: Polygon = [];
-	const innerPoints: Polygon = [];
-
-	const outerRadius = circle.radius + strokeWidth / 2;
-	const innerRadius = Math.max(0, circle.radius - strokeWidth / 2);
-
-	for (let i = 0; i <= segments; i++) {
-		const angle = (2 * Math.PI * i) / segments;
-		outerPoints.push({
-			x: circle.centerX + outerRadius * Math.cos(angle),
-			y: circle.centerY + outerRadius * Math.sin(angle),
-		});
-		innerPoints.push({
-			x: circle.centerX + innerRadius * Math.cos(angle),
-			y: circle.centerY + innerRadius * Math.sin(angle),
-		});
-	}
-
-	// 外环
-	polygons.push(outerPoints);
-	// 内环（孔洞）
-	if (innerRadius > 0) {
-		polygons.push(innerPoints.reverse()); // 反向表示孔洞
-	}
-
-	return polygons;
-}
-
-/**
- * 矩形转多边形
- */
-function rectToPolygons(rect: any, strokeWidth: number): Polygon[] {
-	const polygons: Polygon[] = [];
-
-	// 如果是实心矩形
-	if (rect.isFilled) {
-		polygons.push([
-			{ x: rect.x, y: rect.y },
-			{ x: rect.x + rect.width, y: rect.y },
-			{ x: rect.x + rect.width, y: rect.y + rect.height },
-			{ x: rect.x, y: rect.y + rect.height },
-		]);
-	}
-	else {
-		// 边框矩形，转换为四条线段
-		const halfWidth = strokeWidth / 2;
-
-		// 上边
-		polygons.push([
-			{ x: rect.x - halfWidth, y: rect.y - halfWidth },
-			{ x: rect.x + rect.width + halfWidth, y: rect.y - halfWidth },
-			{ x: rect.x + rect.width + halfWidth, y: rect.y + halfWidth },
-			{ x: rect.x - halfWidth, y: rect.y + halfWidth },
-		]);
-
-		// 下边
-		polygons.push([
-			{ x: rect.x - halfWidth, y: rect.y + rect.height - halfWidth },
-			{ x: rect.x + rect.width + halfWidth, y: rect.y + rect.height - halfWidth },
-			{ x: rect.x + rect.width + halfWidth, y: rect.y + rect.height + halfWidth },
-			{ x: rect.x - halfWidth, y: rect.y + rect.height + halfWidth },
-		]);
-
-		// 左边
-		polygons.push([
-			{ x: rect.x - halfWidth, y: rect.y - halfWidth },
-			{ x: rect.x + halfWidth, y: rect.y - halfWidth },
-			{ x: rect.x + halfWidth, y: rect.y + rect.height + halfWidth },
-			{ x: rect.x - halfWidth, y: rect.y + rect.height + halfWidth },
-		]);
-
-		// 右边
-		polygons.push([
-			{ x: rect.x + rect.width - halfWidth, y: rect.y - halfWidth },
-			{ x: rect.x + rect.width + halfWidth, y: rect.y - halfWidth },
-			{ x: rect.x + rect.width + halfWidth, y: rect.y + rect.height + halfWidth },
-			{ x: rect.x + rect.width - halfWidth, y: rect.y + rect.height + halfWidth },
-		]);
-	}
-
-	return polygons;
-}
-
-/**
- * 多边形图元转多边形
- */
-function polygonToPolygons(polygon: any): Polygon[] {
-	if (polygon.points && polygon.points.length >= 3) {
-		return [polygon.points.map((p: any) => ({ x: p.x, y: p.y }))];
-	}
-	return [];
-}
-
-/**
- * 文本转多边形（简化为包围盒）
- */
-function textToPolygon(text: any, _strokeWidth: number): Polygon[] {
-	// 简化处理：使用文本的包围盒
-	if (text.boundingBox) {
-		return [[
-			{ x: text.boundingBox.x, y: text.boundingBox.y },
-			{ x: text.boundingBox.x + text.boundingBox.width, y: text.boundingBox.y },
-			{ x: text.boundingBox.x + text.boundingBox.width, y: text.boundingBox.y + text.boundingBox.height },
-			{ x: text.boundingBox.x, y: text.boundingBox.y + text.boundingBox.height },
-		]];
-	}
-	return [];
 }
 
 /**
  * 获取指定图层的所有图元并转换为多边形
- * @param layerId 图层ID
- * @param strokeWidth 线宽
- * @returns 多边形数组
+ * 只返回与目标边界框相交的图元
  */
-export async function getLayerPolygons(layerId: number, strokeWidth: number = 0.1): Promise<Polygon[]> {
-	const primitives = await getLayerPrimitives(layerId);
-	const allPolygons: Polygon[] = [];
+export async function getLayerPolygons(
+	layerId: number,
+	targetBBox?: { minX: number; minY: number; maxX: number; maxY: number },
+): Promise<Polygon[]> {
+	startTimer('getLayerPolygons');
+	logAPICall('getLayerPolygons', [layerId, targetBBox]);
+	diagnosticLog(`开始获取图层 ${layerId} 的多边形`, targetBBox ? `目标边界框: ${JSON.stringify(targetBBox)}` : '');
 
-	for (const prim of primitives) {
-		const polygons = primitiveToPolygons(prim, strokeWidth);
+	const primitives = await getLayerPrimitives(layerId);
+	diagnosticLog(`获取到 ${primitives.length} 个图元`);
+
+	// 批量转换多边形
+	const allPolygons: Polygon[] = [];
+	let totalPolygons = 0;
+
+	for (const primitive of primitives) {
+		// 如果提供了目标边界框，先检查是否相交
+		if (targetBBox) {
+			const primitiveBBox = getPrimitiveBBox(primitive);
+			if (!primitiveBBox || !bboxesIntersect(primitiveBBox, targetBBox)) {
+				continue; // 不相交则跳过
+			}
+		}
+
+		const polygons = primitiveToPolygons(primitive);
 		allPolygons.push(...polygons);
+		totalPolygons += polygons.length;
+
+		if (DIAGNOSTIC_MODE.VERBOSE && polygons.length > 0) {
+			diagnosticLog(`图元 ${primitive.id} (${primitive.type}) 转换为 ${polygons.length} 个多边形`);
+		}
 	}
 
+	endTimer('getLayerPolygons', '获取图层多边形总耗时: ');
+	diagnosticLog(`图层 ${layerId} 多边形转换完成: ${allPolygons.length} 个多边形 (${totalPolygons} 个转换结果)`);
+	logAPIReturn('getLayerPolygons', allPolygons.length);
+
 	return allPolygons;
+}
+
+/**
+ * 清除所有缓存
+ */
+export function clearCache(primitives: SilkscreenPrimitive[]): void {
+	diagnosticLog(`清除 ${primitives.length} 个图元的缓存`);
+	for (const primitive of primitives) {
+		primitive.cachedPolygons = undefined;
+		primitive.cachedBBox = undefined;
+	}
 }

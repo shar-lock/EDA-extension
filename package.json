@@ -16,7 +16,11 @@
 	},
 	"dependencies": {
 		"@doodle3d/clipper-js": "^1.0.11",
-		"process": "^0.11.10"
+		"@types/react": "^19.2.14",
+		"@types/react-dom": "^19.2.3",
+		"process": "^0.11.10",
+		"react": "^19.2.5",
+		"react-dom": "^19.2.5"
 	},
 	"devDependencies": {
 		"@antfu/eslint-config": "^5.4.1",

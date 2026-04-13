@@ -12,7 +12,17 @@ import type { FillRegionConfig } from './fill-generator';
 import { createFilledRegions } from './fill-generator';
 import { getLayerPolygons } from './layer-extractor';
 import { selectionToPolygon, waitForUserSelection } from './selection-handler';
-import { cleanPolygons, difference } from './utils/clipper';
+import { cleanPolygons, difference, getPolygonBBox } from './utils/clipper';
+import {
+	captureError,
+	DIAGNOSTIC_MODE,
+	diagnosticLog,
+	endTimer,
+	logPolygonInfo,
+	logPolygonsInfo,
+	startTimer,
+	validateClipperData,
+} from './utils/diagnostic';
 
 /**
  * 丝印层填充配置
@@ -22,8 +32,6 @@ export interface SilkscreenFillConfig {
 	silkscreenLayerId: number;
 	/** 填充层ID（默认与丝印层相同） */
 	fillLayerId: number;
-	/** 丝印线宽（用于将线条转换为面） */
-	strokeWidth: number;
 	/** 网络名称（可选） */
 	netName?: string;
 	/** 填充模式 */
@@ -38,18 +46,22 @@ export interface SilkscreenFillConfig {
 const DEFAULT_CONFIG: SilkscreenFillConfig = {
 	silkscreenLayerId: EPCB_LayerId.TOP_SILKSCREEN, // 顶层丝印层
 	fillLayerId: EPCB_LayerId.TOP_SILKSCREEN,
-	strokeWidth: 0.1,
 	fillMode: 'solid',
 };
 
 /**
- * 执行丝印层填充
+ * 执行丝印层填充 - 补集算法
  *
- * 主流程：
- * 1. 等待用户框选区域
- * 2. 提取丝印层所有图元并转换为多边形
- * 3. 执行差集运算：选区 - 丝印图元
- * 4. 在指定图层生成填充区域
+ * 核心概念：计算用户选区与丝印图元的补集
+ * 数学表达：FillRegion = SelectionArea - SilkscreenPrimitives
+ *
+ * 优化流程：
+ * 1. 获取精确选区边界
+ * 2. 提取并筛选与选区相交的丝印图元
+ * 3. 高效转换为多边形（批量处理+缓存）
+ * 4. 执行差集运算（选区 - 丝印图元）
+ * 5. 清理和优化结果多边形
+ * 6. 批量生成填充区域
  *
  * @param config 配置（可选，使用默认配置）
  * @returns 创建的填充区域ID数组
@@ -57,77 +69,174 @@ const DEFAULT_CONFIG: SilkscreenFillConfig = {
 export async function executeSilkscreenFill(
 	config: Partial<SilkscreenFillConfig> = {},
 ): Promise<string[]> {
+	// 启用诊断模式
+	if (DIAGNOSTIC_MODE.ENABLED) {
+		diagnosticLog('============ 丝印层填充-诊断模式启动 ============');
+		diagnosticLog('输入配置:', config);
+	}
+
 	const finalConfig: SilkscreenFillConfig = { ...DEFAULT_CONFIG, ...config };
+	startTimer('total_execution');
 
 	// eslint-disable-next-line no-console
-	console.log('开始丝印层填充流程...');
+	console.log('【丝印层填充-补集算法】开始执行');
 	// eslint-disable-next-line no-console
 	console.log('配置:', finalConfig);
 
+	let createdIds: string[] = [];
+
 	try {
-		// 步骤1: 获取用户框选区域
+		// 步骤1: 获取精确选区
 		// eslint-disable-next-line no-console
-		console.log('步骤1: 等待用户框选区域...');
+		console.log('步骤1: 获取用户选区边界...');
+		startTimer('step_selection');
 		const selectionResult = await waitForUserSelection();
+		endTimer('step_selection', '选区获取耗时: ');
+		diagnosticLog('选区结果:', selectionResult);
 
 		if (!selectionResult.success || !selectionResult.rect) {
-			throw new Error(`获取选区失败: ${selectionResult.error || '未知错误'}`);
+			const errorMsg = `获取选区失败: ${selectionResult.error || '未知错误'}`;
+			captureError(new Error(errorMsg), '选区获取');
+			throw new Error(errorMsg);
+		}
+
+		// 验证选区有效性
+		if (selectionResult.rect.width <= 0 || selectionResult.rect.height <= 0) {
+			const errorMsg = '无效的选区尺寸';
+			captureError(new Error(errorMsg), '选区验证');
+			throw new Error(errorMsg);
 		}
 
 		// eslint-disable-next-line no-console
-		console.log('选区:', selectionResult.rect);
-
-		// 步骤2: 提取丝印层图元并转换为多边形
-		// eslint-disable-next-line no-console
-		console.log('步骤2: 提取丝印层图元...');
-		const silkscreenPolygons = await getLayerPolygons(
-			finalConfig.silkscreenLayerId,
-			finalConfig.strokeWidth,
-		);
-
-		// eslint-disable-next-line no-console
-		console.log(`提取到 ${silkscreenPolygons.length} 个丝印多边形`);
-
-		// 步骤3: 执行差集运算
-		// eslint-disable-next-line no-console
-		console.log('步骤3: 执行布尔差集运算...');
+		console.log('选区边界:', selectionResult.rect);
 		const selectionPolygon = selectionToPolygon(selectionResult.rect);
+		logPolygonInfo(selectionPolygon, '选区多边形');
 
-		// 差集运算：选区矩形 - 丝印图元
-		const resultPolygons = difference([selectionPolygon], silkscreenPolygons);
+		// 步骤2: 智能提取丝印图元
+		// 只提取与选区相交的丝印图元，优化性能
+		// eslint-disable-next-line no-console
+		console.log('步骤2: 智能提取丝印图元...');
+		startTimer('step_extraction');
 
-		// 清理空多边形
+		// 计算选区边界框
+		const selectionBBox = {
+			minX: selectionResult.rect.x,
+			minY: selectionResult.rect.y,
+			maxX: selectionResult.rect.x + selectionResult.rect.width,
+			maxY: selectionResult.rect.y + selectionResult.rect.height,
+		};
+		diagnosticLog('选区边界框:', selectionBBox);
+
+		// 获取与选区相交的丝印多边形
+		const silkscreenPolygons = await getLayerPolygons(finalConfig.silkscreenLayerId, selectionBBox);
+		endTimer('step_extraction', '丝印提取耗时: ');
+
+		// eslint-disable-next-line no-console
+		console.log(`丝印提取完成: ${silkscreenPolygons.length} 个多边形`);
+		logPolygonsInfo(silkscreenPolygons, '丝印多边形');
+
+		// 验证丝印多边形数据
+		if (DIAGNOSTIC_MODE.ENABLED) {
+			validateClipperData(silkscreenPolygons, '丝印多边形验证');
+		}
+
+		// 步骤3: 执行补集运算（差集）
+		// eslint-disable-next-line no-console
+		console.log('步骤3: 执行补集运算...');
+		startTimer('step_difference');
+
+		// 执行差集运算：选区 - 丝印图元
+		// 如果没有任何丝印图元，直接填充整个选区
+		const polygonsToSubtract = silkscreenPolygons.length > 0 ? silkscreenPolygons : [];
+		diagnosticLog('差集运算输入:', {
+			subjectCount: 1,
+			clipCount: polygonsToSubtract.length,
+		});
+		logPolygonsInfo([selectionPolygon], '差集运算-subject');
+		logPolygonsInfo(polygonsToSubtract, '差集运算-clip');
+
+		const resultPolygons = difference([selectionPolygon], polygonsToSubtract);
+
+		endTimer('step_difference', '差集运算耗时: ');
+		// eslint-disable-next-line no-console
+		console.log(`补集运算完成: ${resultPolygons.length} 个结果多边形`);
+		logPolygonsInfo(resultPolygons, '差集运算结果');
+
+		// 步骤4: 清理和优化结果
+		// eslint-disable-next-line no-console
+		console.log('步骤4: 清理结果多边形...');
+		startTimer('step_cleaning');
+
+		// 清理无效多边形
 		const cleanedPolygons = cleanPolygons(resultPolygons);
 
-		// eslint-disable-next-line no-console
-		console.log(`差集运算结果: ${cleanedPolygons.length} 个填充多边形`);
+		// 移除过小的区域（面积小于选区面积的0.1%）
+		const minArea = (selectionResult.rect.width * selectionResult.rect.height) * 0.001;
+		const filteredPolygons = cleanedPolygons.filter((polygon) => {
+			const bbox = getPolygonBBox(polygon);
+			if (!bbox)
+				return false;
+			// 计算近似面积
+			const area = (bbox.maxX - bbox.minX) * (bbox.maxY - bbox.minY);
+			return area > minArea;
+		});
 
-		if (cleanedPolygons.length === 0) {
-			console.warn('没有生成任何填充区域，可能选区完全被丝印覆盖');
+		endTimer('step_cleaning', '清理耗时: ');
+		// eslint-disable-next-line no-console
+		console.log(`清理完成: ${filteredPolygons.length} 个有效填充多边形`);
+		logPolygonsInfo(filteredPolygons, '最终填充多边形');
+
+		if (filteredPolygons.length === 0) {
+			const warningMsg = '警告: 没有生成任何填充区域，可能选区完全被丝印覆盖或区域过小';
+			diagnosticLog(warningMsg);
+			console.warn(warningMsg);
 			return [];
 		}
 
-		// 步骤4: 生成填充区域
+		// 步骤5: 生成填充区域
 		// eslint-disable-next-line no-console
-		console.log('步骤4: 生成填充区域...');
+		console.log('步骤5: 批量生成填充区域...');
+		startTimer('step_generation');
+
 		const fillConfig: FillRegionConfig = {
 			layerId: finalConfig.fillLayerId,
 			netName: finalConfig.netName,
 			fillMode: finalConfig.fillMode,
 			color: finalConfig.color,
 		};
+		diagnosticLog('填充配置:', fillConfig);
 
-		const createdIds = await createFilledRegions(cleanedPolygons, fillConfig);
+		createdIds = await createFilledRegions(filteredPolygons, fillConfig);
 
+		endTimer('step_generation', '填充生成耗时: ');
 		// eslint-disable-next-line no-console
-		console.log(`成功创建 ${createdIds.length} 个填充区域`);
+		console.log(`填充生成完成: ${createdIds.length} 个填充区域`);
+
+		// 总耗时统计
+		endTimer('total_execution', '【补集算法】总耗时: ');
 		// eslint-disable-next-line no-console
 		console.log('丝印层填充完成!');
+
+		if (DIAGNOSTIC_MODE.ENABLED) {
+			diagnosticLog('============ 丝印层填充-诊断模式结束 ============');
+		}
+
+		// 显示成功提示
+		eda.sys_Dialog.showInformationMessage(
+			`丝印层填充完成！\n成功创建 ${createdIds.length} 个填充区域`,
+			'完成',
+		);
 
 		return createdIds;
 	}
 	catch (error) {
+		captureError(error, '丝印层填充主流程');
+		endTimer('total_execution', '【补集算法】总耗时（含错误）: ');
 		console.error('丝印层填充失败:', error);
+
+		if (DIAGNOSTIC_MODE.ENABLED) {
+			diagnosticLog('============ 丝印层填充-诊断模式结束（错误） ============');
+		}
 
 		// 显示错误提示
 		eda.sys_Dialog.showInformationMessage(

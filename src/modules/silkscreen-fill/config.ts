@@ -25,12 +25,6 @@ export const SILKSCREEN_FILL_CONFIG: SilkscreenFillConfig = {
 	fillLayerId: 3,
 
 	/**
-	 * 丝印线宽（毫米）
-	 * 用于将丝印线条转换为填充面
-	 */
-	strokeWidth: 0.1,
-
-	/**
 	 * 网络名称（可选）
 	 * 如果需要关联特定网络，可以设置
 	 */
