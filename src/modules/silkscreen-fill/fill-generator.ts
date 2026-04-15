@@ -6,6 +6,7 @@
 
 // EPCB_LayerId 和 EPCB_PrimitiveFillMode 在 @jlceda/pro-api-types 中通过 declare global 声明，无需导入
 import type { Polygon } from './utils/clipper';
+import { diagnosticLog, logAPICall, logAPIReturn } from './utils/diagnostic';
 
 /**
  * 填充区域配置
@@ -32,76 +33,124 @@ export async function createFilledRegions(
 	polygons: Polygon[],
 	config: FillRegionConfig,
 ): Promise<string[]> {
-	const createdIds: string[] = [];
+	// 参数验证
+	if (!Array.isArray(polygons)) {
+		throw new TypeError('polygons 必须是一个数组');
+	}
 
-	try {
-		// 为每个多边形创建填充区域
-		for (let i = 0; i < polygons.length; i++) {
-			const polygon = polygons[i];
+	if (!config || typeof config.layerId !== 'number' || config.layerId < 0) {
+		throw new Error('无效的配置或图层ID');
+	}
+
+	const createdIds: string[] = [];
+	const startTime = performance.now();
+
+	diagnosticLog(`开始创建填充区域: ${polygons.length} 个多边形`);
+
+	// 批量处理，限制并发数
+	const BATCH_SIZE = 10;
+	for (let i = 0; i < polygons.length; i += BATCH_SIZE) {
+		const batch = polygons.slice(i, i + BATCH_SIZE);
+		const batchPromises: Promise<string | null>[] = [];
+
+		for (let j = 0; j < batch.length; j++) {
+			const polygon = batch[j];
+			const globalIndex = i + j;
 
 			if (polygon.length < 3) {
-				continue; // 跳过无效多边形
+				diagnosticLog(`跳过无效多边形 ${globalIndex}: 点数 ${polygon.length}`);
+				continue;
 			}
 
-			try {
-				// 1. 将 Point[] 转换为 TPCB_PolygonSourceArray
-				// 格式: [x1, y1, 'L', x2, y2, x3, y3, ...]
-				// 注意: TPCB_PolygonSourceArray 是 (number | 'L' | 'ARC' | 'C')[] 类型
-				const sourceArray: any[] = [];
-				if (polygon.length >= 3) {
-					// 从第一个点开始
-					sourceArray.push(polygon[0].x, polygon[0].y);
-					// 添加线段命令和后续点
-					for (let j = 1; j < polygon.length; j++) {
-						sourceArray.push('L', polygon[j].x, polygon[j].y);
-					}
-					// 闭合多边形（回到起点）
-					sourceArray.push('L', polygon[0].x, polygon[0].y);
-				}
+			batchPromises.push(
+				createSingleFill(polygon, config, globalIndex).catch((error) => {
+					diagnosticLog(`创建填充区域 ${globalIndex} 失败:`, error);
+					return null;
+				}),
+			);
+		}
 
-				if (sourceArray.length === 0) {
-					console.warn('跳过空多边形');
-					continue;
-				}
-
-				// 2. 创建 IPCB_Polygon
-				const polyObj = eda.pcb_MathPolygon.createPolygon(sourceArray);
-				if (!polyObj) {
-					console.error(`多边形数据无效:`, sourceArray);
-					continue;
-				}
-
-				// 3. 获取填充模式
-				const fillModeValue = config.fillMode === 'hatched'
-					? EPCB_PrimitiveFillMode.MESH
-					: EPCB_PrimitiveFillMode.SOLID;
-
-				// 4. 创建填充图元
-				// 参数: layer, complexPolygon, net?, fillMode?, lineWidth?, primitiveLock?
-				const fill = await eda.pcb_PrimitiveFill.create(
-					config.layerId,
-					polyObj,
-					config.netName,
-					fillModeValue,
-					0, // lineWidth
-					false, // primitiveLock
-				);
-
-				if (fill) {
-					createdIds.push(fill.getState_PrimitiveId());
-				}
-			}
-			catch (error) {
-				console.error(`创建填充区域 ${i} 失败:`, error);
+		// 等待当前批次完成
+		const batchResults = await Promise.all(batchPromises);
+		for (const result of batchResults) {
+			if (result) {
+				createdIds.push(result);
 			}
 		}
 
-		return createdIds;
+		// 每批之间稍微延迟，避免界面卡顿
+		if (i + BATCH_SIZE < polygons.length) {
+			await new Promise(resolve => setTimeout(resolve, 10));
+		}
 	}
-	catch (error) {
-		console.error('创建填充区域失败:', error);
-		throw error;
+
+	const duration = performance.now() - startTime;
+	diagnosticLog(`填充区域创建完成: ${createdIds.length} 个，耗时 ${duration.toFixed(2)}ms`);
+
+	return createdIds;
+}
+
+/**
+ * 创建单个填充区域
+ * @internal
+ */
+async function createSingleFill(
+	polygon: Polygon,
+	config: FillRegionConfig,
+	index: number,
+): Promise<string | null> {
+	logAPICall('createSingleFill', [{ index, points: polygon.length }]);
+
+	// 1. 将 Point[] 转换为 TPCB_PolygonSourceArray
+	// 格式: [x1, y1, 'L', x2, y2, x3, y3, ...]
+	const sourceArray: any[] = [];
+
+	if (polygon.length >= 3) {
+		// 从第一个点开始
+		sourceArray.push(polygon[0].x, polygon[0].y);
+		// 添加线段命令和后续点
+		for (let j = 1; j < polygon.length; j++) {
+			sourceArray.push('L', polygon[j].x, polygon[j].y);
+		}
+		// 闭合多边形（回到起点）
+		sourceArray.push('L', polygon[0].x, polygon[0].y);
 	}
+
+	if (sourceArray.length === 0) {
+		diagnosticLog(`跳过空多边形 ${index}`);
+		return null;
+	}
+
+	// 2. 创建 IPCB_Polygon
+	const polyObj = eda.pcb_MathPolygon.createPolygon(sourceArray);
+	if (!polyObj) {
+		diagnosticLog(`多边形数据无效 ${index}:`, sourceArray.slice(0, 10));
+		return null;
+	}
+
+	// 3. 获取填充模式
+	const fillModeValue = config.fillMode === 'hatched'
+		? EPCB_PrimitiveFillMode.MESH
+		: EPCB_PrimitiveFillMode.SOLID;
+
+	// 4. 创建填充图元
+	// 参数: layer, complexPolygon, net?, fillMode?, lineWidth?, primitiveLock?
+	const fill = await eda.pcb_PrimitiveFill.create(
+		config.layerId,
+		polyObj,
+		config.netName || undefined,
+		fillModeValue,
+		0, // lineWidth
+		false, // primitiveLock
+	);
+
+	if (fill) {
+		const primitiveId = fill.getState_PrimitiveId();
+		logAPIReturn('createSingleFill', primitiveId);
+		return primitiveId;
+	}
+
+	return null;
 }
 
 /**

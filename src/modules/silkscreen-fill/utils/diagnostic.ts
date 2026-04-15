@@ -4,14 +4,14 @@
  * 提供超级详细日志、可视化调试和性能分析功能
  */
 
-import type { Point, Polygon, Polygons } from './clipper';
+import type { Polygon, Polygons } from './clipper';
 
 // 诊断模式开关
 export const DIAGNOSTIC_MODE = {
 	ENABLED: true,
-	VERBOSE: true,      // 超级详细日志
-	PERFORMANCE: true,  // 性能分析
-	VISUALIZE: false,   // 可视化调试（需要手动实现）
+	VERBOSE: true, // 超级详细日志
+	PERFORMANCE: true, // 性能分析
+	VISUALIZE: false, // 可视化调试（需要手动实现）
 };
 
 // 性能计时器
@@ -21,7 +21,8 @@ const timers: Map<string, number> = new Map();
  * 开始计时
  */
 export function startTimer(label: string): void {
-	if (!DIAGNOSTIC_MODE.PERFORMANCE) return;
+	if (!DIAGNOSTIC_MODE.PERFORMANCE)
+		return;
 	timers.set(label, performance.now());
 }
 
@@ -29,7 +30,8 @@ export function startTimer(label: string): void {
  * 结束计时并输出
  */
 export function endTimer(label: string, prefix: string = ''): void {
-	if (!DIAGNOSTIC_MODE.PERFORMANCE) return;
+	if (!DIAGNOSTIC_MODE.PERFORMANCE)
+		return;
 
 	const startTime = timers.get(label);
 	if (startTime) {
@@ -43,7 +45,8 @@ export function endTimer(label: string, prefix: string = ''): void {
  * 诊断日志（带时间戳）
  */
 export function diagnosticLog(...args: any[]): void {
-	if (!DIAGNOSTIC_MODE.ENABLED) return;
+	if (!DIAGNOSTIC_MODE.ENABLED)
+		return;
 
 	const timestamp = new Date().toISOString();
 	const prefix = `[DIAG ${timestamp}] `;
@@ -51,7 +54,8 @@ export function diagnosticLog(...args: any[]): void {
 	if (DIAGNOSTIC_MODE.VERBOSE) {
 		// 详细模式输出完整信息
 		console.log(prefix, ...args);
-	} else {
+	}
+	else {
 		// 简洁模式只输出关键信息
 		if (args.length > 0 && typeof args[0] === 'string') {
 			const msg = args[0];
@@ -66,7 +70,8 @@ export function diagnosticLog(...args: any[]): void {
  * 调试日志（始终输出）
  */
 export function debugLog(...args: any[]): void {
-	if (!DIAGNOSTIC_MODE.ENABLED) return;
+	if (!DIAGNOSTIC_MODE.ENABLED)
+		return;
 
 	const timestamp = new Date().toISOString();
 	console.warn(`[DEBUG ${timestamp}]`, ...args);
@@ -76,7 +81,8 @@ export function debugLog(...args: any[]): void {
  * 日志多边形信息
  */
 export function logPolygonInfo(polygon: Polygon, name: string = '多边形'): void {
-	if (!DIAGNOSTIC_MODE.VERBOSE) return;
+	if (!DIAGNOSTIC_MODE.VERBOSE)
+		return;
 
 	const area = calculatePolygonArea(polygon);
 	const perimeter = calculatePolygonPerimeter(polygon);
@@ -95,7 +101,8 @@ export function logPolygonInfo(polygon: Polygon, name: string = '多边形'): vo
  * 日志多边形数组信息
  */
 export function logPolygonsInfo(polygons: Polygons, name: string = '多边形数组'): void {
-	if (!DIAGNOSTIC_MODE.VERBOSE) return;
+	if (!DIAGNOSTIC_MODE.VERBOSE)
+		return;
 
 	diagnosticLog(`${name}: ${polygons.length} 个多边形`);
 
@@ -103,7 +110,8 @@ export function logPolygonsInfo(polygons: Polygons, name: string = '多边形数
 		polygons.forEach((poly, index) => {
 			logPolygonInfo(poly, `${name}[${index}]`);
 		});
-	} else if (polygons.length > 10) {
+	}
+	else if (polygons.length > 10) {
 		// 超过10个只显示前几个
 		polygons.slice(0, 3).forEach((poly, index) => {
 			logPolygonInfo(poly, `${name}[${index}]`);
@@ -116,7 +124,8 @@ export function logPolygonsInfo(polygons: Polygons, name: string = '多边形数
  * 计算多边形面积（带符号）
  */
 function calculatePolygonArea(polygon: Polygon): number {
-	if (polygon.length < 3) return 0;
+	if (polygon.length < 3)
+		return 0;
 
 	let area = 0;
 	for (let i = 0; i < polygon.length; i++) {
@@ -131,9 +140,10 @@ function calculatePolygonArea(polygon: Polygon): number {
  * 计算多边形周长
  */
 function calculatePolygonPerimeter(polygon: Polygon): number {
-	if (polygon.length < 2) return 0;
+	if (polygon.length < 2)
+		return 0;
 
- let perimeter = 0;
+	let perimeter = 0;
 	for (let i = 0; i < polygon.length; i++) {
 		const j = (i + 1) % polygon.length;
 		const dx = polygon[j].x - polygon[i].x;
@@ -148,7 +158,8 @@ function calculatePolygonPerimeter(polygon: Polygon): number {
  * 计算多边形边界框
  */
 function getPolygonBBox(polygon: Polygon): { minX: number; minY: number; maxX: number; maxY: number } | null {
-	if (polygon.length === 0) return null;
+	if (polygon.length === 0)
+		return null;
 
 	let minX = polygon[0].x;
 	let minY = polygon[0].y;
@@ -169,7 +180,8 @@ function getPolygonBBox(polygon: Polygon): { minX: number; minY: number; maxX: n
  * 导出调试数据到JSON
  */
 export function exportDebugData(data: any, filename: string = 'debug-data'): void {
-	if (!DIAGNOSTIC_MODE.ENABLED) return;
+	if (!DIAGNOSTIC_MODE.ENABLED)
+		return;
 
 	// 创建可下载的JSON文件
 	const jsonString = JSON.stringify(data, null, 2);
@@ -187,11 +199,15 @@ export function exportDebugData(data: any, filename: string = 'debug-data'): voi
 
 /**
  * 验证Clipper多边形数据
+ * 注意：由lineToPolygon生成的线段多边形不需要闭合，这是正常现象
  */
 export function validateClipperData(polygons: Polygons, name: string = 'Clipper数据'): boolean {
-	if (!DIAGNOSTIC_MODE.ENABLED) return true;
+	if (!DIAGNOSTIC_MODE.ENABLED)
+		return true;
 
 	let isValid = true;
+	let closedCount = 0;
+	let unclosedCount = 0;
 
 	for (let i = 0; i < polygons.length; i++) {
 		const polygon = polygons[i];
@@ -211,14 +227,25 @@ export function validateClipperData(polygons: Polygons, name: string = 'Clipper�
 			}
 		}
 
-		// 检查是否闭合（首尾点相同）
+		// 统计闭合状态（仅用于信息，不视为错误）
 		if (polygon.length > 3) {
 			const first = polygon[0];
 			const last = polygon[polygon.length - 1];
 			const isClosed = Math.abs(first.x - last.x) < 0.001 && Math.abs(first.y - last.y) < 0.001;
-			if (!isClosed) {
-				diagnosticLog(`${name}[${i}] 多边形未闭合`);
+			if (isClosed) {
+				closedCount++;
+			} else {
+				unclosedCount++;
 			}
+		}
+	}
+
+	// 记录闭合状态统计（仅信息级别）
+	if (closedCount > 0 || unclosedCount > 0) {
+		diagnosticLog(`${name} 闭合状态: ${closedCount} 个闭合, ${unclosedCount} 个未闭合`);
+		// 只有当大部分多边形都未闭合时才警告
+		if (unclosedCount > closedCount * 3 && closedCount > 0) {
+			diagnosticLog(`警告: ${name} 中大部分多边形未闭合，可能影响布尔运算结果`);
 		}
 	}
 
@@ -229,7 +256,8 @@ export function validateClipperData(polygons: Polygons, name: string = 'Clipper�
  * 捕获并记录错误
  */
 export function captureError(error: any, context: string = ''): void {
-	if (!DIAGNOSTIC_MODE.ENABLED) return;
+	if (!DIAGNOSTIC_MODE.ENABLED)
+		return;
 
 	diagnosticLog(`错误捕获${context ? ` - ${context}` : ''}:`, {
 		message: error instanceof Error ? error.message : error,
@@ -241,7 +269,8 @@ export function captureError(error: any, context: string = ''): void {
  * 记录API调用
  */
 export function logAPICall(apiName: string, params: any[]): void {
-	if (!DIAGNOSTIC_MODE.VERBOSE) return;
+	if (!DIAGNOSTIC_MODE.VERBOSE)
+		return;
 
 	diagnosticLog(`API调用: ${apiName}`, '参数:', params);
 }
@@ -250,7 +279,8 @@ export function logAPICall(apiName: string, params: any[]): void {
  * 记录API返回
  */
 export function logAPIReturn(apiName: string, result: any): void {
-	if (!DIAGNOSTIC_MODE.VERBOSE) return;
+	if (!DIAGNOSTIC_MODE.VERBOSE)
+		return;
 
 	diagnosticLog(`API返回: ${apiName}`, '结果:', result);
 }

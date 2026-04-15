@@ -69,6 +69,21 @@ const DEFAULT_CONFIG: SilkscreenFillConfig = {
 export async function executeSilkscreenFill(
 	config: Partial<SilkscreenFillConfig> = {},
 ): Promise<string[]> {
+	// 参数验证
+	if (config.silkscreenLayerId !== undefined &&
+		(!Number.isInteger(config.silkscreenLayerId) || config.silkscreenLayerId < 0)) {
+		throw new Error(`无效的丝印层ID: ${config.silkscreenLayerId}`);
+	}
+
+	if (config.fillLayerId !== undefined &&
+		(!Number.isInteger(config.fillLayerId) || config.fillLayerId < 0)) {
+		throw new Error(`无效的填充层ID: ${config.fillLayerId}`);
+	}
+
+	if (config.fillMode !== undefined &&
+		!['solid', 'hatched'].includes(config.fillMode)) {
+		throw new Error(`无效的填充模式: ${config.fillMode}`);
+	}
 	// 启用诊断模式
 	if (DIAGNOSTIC_MODE.ENABLED) {
 		diagnosticLog('============ 丝印层填充-诊断模式启动 ============');
@@ -94,10 +109,16 @@ export async function executeSilkscreenFill(
 		endTimer('step_selection', '选区获取耗时: ');
 		diagnosticLog('选区结果:', selectionResult);
 
+		if (!selectionResult.success) {
+			const errorMsg = selectionResult.error || '获取选区失败';
+			diagnosticLog(errorMsg);
+			return [];
+		}
+
 		if (!selectionResult.success || !selectionResult.rect) {
-			const errorMsg = `获取选区失败: ${selectionResult.error || '未知错误'}`;
-			captureError(new Error(errorMsg), '选区获取');
-			throw new Error(errorMsg);
+			const errorMsg = selectionResult.error || '获取选区失败';
+			diagnosticLog(errorMsg);
+			return [];
 		}
 
 		// 验证选区有效性

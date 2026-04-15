@@ -4,7 +4,8 @@
       "WebSearch",
       "Bash(npm list:*)",
       "Bash(npm show:*)",
-      "Bash(node -e \"console.log\\(require.resolve\\('@jlceda/pro-api-types'\\)\\)\")"
+      "Bash(node -e \"console.log\\(require.resolve\\('@jlceda/pro-api-types'\\)\\)\")",
+      "Bash(npm run:*)"
     ]
   }
 }
