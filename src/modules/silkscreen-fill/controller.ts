@@ -70,18 +70,18 @@ export async function executeSilkscreenFill(
 	config: Partial<SilkscreenFillConfig> = {},
 ): Promise<string[]> {
 	// 参数验证
-	if (config.silkscreenLayerId !== undefined &&
-		(!Number.isInteger(config.silkscreenLayerId) || config.silkscreenLayerId < 0)) {
+	if (config.silkscreenLayerId !== undefined
+		&& (!Number.isInteger(config.silkscreenLayerId) || config.silkscreenLayerId < 0)) {
 		throw new Error(`无效的丝印层ID: ${config.silkscreenLayerId}`);
 	}
 
-	if (config.fillLayerId !== undefined &&
-		(!Number.isInteger(config.fillLayerId) || config.fillLayerId < 0)) {
+	if (config.fillLayerId !== undefined
+		&& (!Number.isInteger(config.fillLayerId) || config.fillLayerId < 0)) {
 		throw new Error(`无效的填充层ID: ${config.fillLayerId}`);
 	}
 
-	if (config.fillMode !== undefined &&
-		!['solid', 'hatched'].includes(config.fillMode)) {
+	if (config.fillMode !== undefined
+		&& !['solid', 'hatched'].includes(config.fillMode)) {
 		throw new Error(`无效的填充模式: ${config.fillMode}`);
 	}
 	// 启用诊断模式
@@ -175,9 +175,12 @@ export async function executeSilkscreenFill(
 		});
 		logPolygonsInfo([selectionPolygon], '差集运算-subject');
 		logPolygonsInfo(polygonsToSubtract, '差集运算-clip');
-
+		console.log('---------------------selectionPolygon  polygonsToSubtract----------------------------------------');
+		console.log(selectionPolygon);
+		console.log(polygonsToSubtract);
 		const resultPolygons = difference([selectionPolygon], polygonsToSubtract);
-
+		console.log('---------------------获取resultPolygons----------------------------------------');
+		console.log(resultPolygons);
 		endTimer('step_difference', '差集运算耗时: ');
 		// eslint-disable-next-line no-console
 		console.log(`补集运算完成: ${resultPolygons.length} 个结果多边形`);

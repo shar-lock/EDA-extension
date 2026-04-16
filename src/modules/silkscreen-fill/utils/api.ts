@@ -92,6 +92,7 @@ export function parsePolygonSourceArray(sourceArray: any[]): {
 					pathCommands.push({ type: 'L', x, y });
 					break;
 				}
+
 				case 'ARC':
 				case 'CARC':
 					pathCommands.push({ type: 'L', x, y });

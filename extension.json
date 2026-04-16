@@ -3,7 +3,7 @@
 	"uuid": "ed90c4943d4147e49d8a91826b1dacde",
 	"displayName": "丝印层填充 (Silkscreen Fill)",
 	"description": "在PCB编辑器中使用 clipper.js 完成丝印层的布尔运算并生成填充区域。",
-	"version": "1.0.7",
+	"version": "1.1.0",
 	"publisher": "JLCEDA",
 	"engines": {
 		"eda": "^3.0.0"

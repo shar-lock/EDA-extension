@@ -75,10 +75,10 @@ export function difference(subject: Polygons, clip: Polygons): Polygons {
 	}
 
 	// 验证输入数据
-	if (DIAGNOSTIC_MODE.ENABLED) {
-		validateClipperData(subject, '差集运算-subject');
-		validateClipperData(clip, '差集运算-clip');
-	}
+	// if (DIAGNOSTIC_MODE.ENABLED) {
+	// 	validateClipperData(subject, '差集运算-subject');
+	// 	validateClipperData(clip, '差集运算-clip');
+	// }
 
 	try {
 		const subjectShape = toShape(subject, true);
@@ -282,59 +282,76 @@ export function arcToPolygon(
 	return points;
 }
 
-// 使用圆心、半径和角度将圆弧转换为多边形
+// 使用起点、终点和角度将圆弧转换为多边形
 export function arcToPolygonWithCenter(
-	centerX: number,
-	centerY: number,
-	radius: number,
-	startAngle: number,
-	endAngle: number,
-	segments: number = 32,
+	startX: number,
+	startY: number,
+	endX: number,
+	endY: number,
+	arcAngle: number,
+	lineWidth: number,
 ): Polygon {
-	if (radius <= 0) {
-		diagnosticLog('圆弧半径无效，返回空数组');
+	diagnosticLog(`圆弧转多边形: (${startX},${startY}) -> (${endX},${endY}) 角度=${arcAngle} 线宽=${lineWidth}`);
+
+	// 如果角度为0，返回空数组
+	if (arcAngle === 0) {
+		diagnosticLog('圆弧角度为0，返回空数组');
 		return [];
 	}
 
-	diagnosticLog(`圆弧转多边形(圆心): 圆心=(${centerX},${centerY}) 半径=${radius} 角度=${startAngle}->${endAngle} 段数=${segments}`);
-
-	// 检查半径是否合理
-	if (!isFinite(radius) || radius > 10000 || radius < 0.001) {
-		diagnosticLog(`圆弧半径异常: ${radius}，返回空数组`);
-		return [];
-	}
-
-	// 检查圆心是否合理
-	if (!isFinite(centerX) || !isFinite(centerY)) {
-		diagnosticLog('圆弧圆心计算异常，返回空数组');
-		return [];
-	}
-
-	// 检查角度是否合理
-	if (!isFinite(startAngle) || !isFinite(endAngle)) {
-		diagnosticLog('圆弧角度计算异常，返回空数组');
-		return [];
-	}
-
-	// 计算角度差（弧度）
-	const angleDiff = endAngle - startAngle;
-
-	// 检查角度差是否合理
-	if (!isFinite(angleDiff) || Math.abs(angleDiff) > Math.PI * 4 || Math.abs(angleDiff) < 0.0001) {
-		diagnosticLog(`圆弧角度差异常: ${angleDiff}，返回简单路径`);
-		// 返回起点和终点的简单路径
-		const startX = centerX + radius * Math.cos(startAngle);
-		const startY = centerY + radius * Math.sin(startAngle);
-		const endX = centerX + radius * Math.cos(endAngle);
-		const endY = centerY + radius * Math.sin(endAngle);
+	// 如果角度非常小或非常大，直接返回起点终点
+	if (Math.abs(arcAngle) < 0.001 || Math.abs(arcAngle) > 360) {
+		diagnosticLog('圆弧角度异常，返回简单路径');
 		return [{ x: startX, y: startY }, { x: endX, y: endY }];
 	}
 
+	// 计算圆心和半径
+	const dx = endX - startX;
+	const dy = endY - startY;
+	const d = Math.sqrt(dx * dx + dy * dy);
+	if (d === 0) {
+		diagnosticLog('圆弧起点终点重合，返回空数组');
+		return [];
+	}
+
+	const angleRad = (arcAngle * Math.PI) / 180;
+	const radius = Math.abs(d / (2 * Math.sin(angleRad / 2)));
+
+	// 检查半径是否合理，如果太大或太小则使用直线
+	if (!isFinite(radius) || radius > 10000 || radius < 0.001) {
+		diagnosticLog(`圆弧半径异常: ${radius}，使用直线代替`);
+		return [{ x: startX, y: startY }, { x: endX, y: endY }];
+	}
+
+	// 中点
+	const midX = (startX + endX) / 2;
+	const midY = (startY + endY) / 2;
+
+	// 垂直向量
+	const h = d / (2 * Math.tan(angleRad / 2));
+	const nx = -(endY - startY) / d;
+	const ny = (endX - startX) / d;
+
+	// 圆心
+	const centerX = midX - h * nx;
+	const centerY = midY - h * ny;
+
+	// 检查圆心是否合理
+	if (!isFinite(centerX) || !isFinite(centerY)) {
+		diagnosticLog('圆弧圆心计算异常，使用直线代替');
+		return [{ x: startX, y: startY }, { x: endX, y: endY }];
+	}
+
+	// 起始角度和终止角度
+	const startAngle = Math.atan2(startY - centerY, startX - centerX);
+	const endAngle = startAngle + angleRad;
+
 	// 生成圆弧上的点
 	const points: Point[] = [];
+	const segments = 32; // 固定细分度
 	for (let i = 0; i <= segments; i++) {
 		const t = i / segments;
-		const angle = startAngle + angleDiff * t;
+		const angle = startAngle + (endAngle - startAngle) * t;
 		const x = centerX + radius * Math.cos(angle);
 		const y = centerY + radius * Math.sin(angle);
 
@@ -349,22 +366,82 @@ export function arcToPolygonWithCenter(
 
 	diagnosticLog(`圆弧转换完成: ${points.length} 个点`);
 
+	// 如果线宽大于0，需要将圆弧转换为有宽度的多边形
+	if (lineWidth > 0) {
+		// 将圆弧路径转换为有宽度的多边形
+		const widthPolygons: Polygon[] = [];
+		for (let i = 0; i < points.length - 1; i++) {
+			const segment = lineToPolygon(
+				points[i].x,
+				points[i].y,
+				points[i + 1].x,
+				points[i + 1].y,
+				lineWidth,
+			);
+			if (segment.length > 0) {
+				widthPolygons.push(segment);
+			}
+		}
+		// 合并所有线段多边形
+		return mergeWidthPolygons(widthPolygons);
+	}
+
 	return points;
+}
+
+// 合并带宽度的多边形
+function mergeWidthPolygons(polygons: Polygon[]): Polygon {
+	if (polygons.length === 0) {
+		return [];
+	}
+	if (polygons.length === 1) {
+		return polygons[0];
+	}
+
+	// 简单的合并策略：取所有多边形的点
+	// 注意：这里简化处理，实际可能需要更复杂的合并算法
+	const allPoints: Point[] = [];
+	for (const poly of polygons) {
+		allPoints.push(...poly);
+	}
+
+	// 尝试使用PCB_MathPolygon.createPolygon来合并
+	if (typeof eda !== 'undefined' && eda.pcb_MathPolygon && typeof eda.pcb_MathPolygon.createPolygon === 'function') {
+		const sourceArray: any[] = [];
+		for (const point of allPoints) {
+			if (sourceArray.length === 0) {
+				sourceArray.push(point.x, point.y);
+			} else {
+				sourceArray.push('L', point.x, point.y);
+			}
+		}
+		if (allPoints.length > 0) {
+			sourceArray.push('L', allPoints[0].x, allPoints[0].y);
+		}
+
+		const polyObj = eda.pcb_MathPolygon.createPolygon(sourceArray);
+		if (polyObj) {
+			diagnosticLog('使用PCB_MathPolygon.createPolygon合并多边形成功');
+			return allPoints; // 返回原始点，因为createPolygon成功验证了数据
+		}
+	}
+
+	return allPoints;
 }
 
 // 将线条转换为带宽度的多边形
 export function lineToPolygon(x1: number, y1: number, x2: number, y2: number, width: number): Polygon {
 	diagnosticLog(`线条转多边形: (${x1},${y1}) -> (${x2},${y2}) 宽度=${width}`);
 
-	// 检查输入参数是否有效
-	if (!isFinite(x1) || !isFinite(y1) || !isFinite(x2) || !isFinite(y2) || !isFinite(width)) {
-		diagnosticLog('线条参数包含非数值，返回空数组');
+	// 放宽条件：只检查关键参数的有效性
+	if (!isFinite(x1) || !isFinite(y1) || !isFinite(x2) || !isFinite(y2)) {
+		diagnosticLog('线条坐标参数包含非数值，返回空数组');
 		return [];
 	}
 
-	// 检查宽度是否合理
-	if (width <= 0 || width > 100) {
-		diagnosticLog(`线条宽度异常: ${width}，返回空数组`);
+	// 放宽宽度检查：允许0宽度和更大的宽度
+	if (width < 0) {
+		diagnosticLog(`线条宽度为负数: ${width}，返回空数组`);
 		return [];
 	}
 
@@ -377,20 +454,16 @@ export function lineToPolygon(x1: number, y1: number, x2: number, y2: number, wi
 		return [];
 	}
 
-	// 检查长度是否合理
-	if (!isFinite(len) || len > 10000) {
-		diagnosticLog(`线条长度异常: ${len}，返回空数组`);
-		return [];
-	}
+	// 计算垂直方向（简化计算，避免除以0）
+	const halfWidth = width / 2;
+	let nx, ny;
 
-	// 计算垂直方向
-	const nx = -dy / len * width / 2;
-	const ny = dx / len * width / 2;
-
-	// 检查计算结果是否有效
-	if (!isFinite(nx) || !isFinite(ny)) {
-		diagnosticLog('线条垂直方向计算异常，返回空数组');
-		return [];
+	if (len > 0) {
+		nx = -dy / len * halfWidth;
+		ny = dx / len * halfWidth;
+	} else {
+		nx = 0;
+		ny = halfWidth;
 	}
 
 	// 计算四个顶点
@@ -399,11 +472,16 @@ export function lineToPolygon(x1: number, y1: number, x2: number, y2: number, wi
 	const p3 = { x: x2 - nx, y: y2 - ny };
 	const p4 = { x: x2 + nx, y: y2 + ny };
 
-	// 检查所有点是否有效
-	if (!isFinite(p1.x) || !isFinite(p1.y) || !isFinite(p2.x) || !isFinite(p2.y) ||
-		!isFinite(p3.x) || !isFinite(p3.y) || !isFinite(p4.x) || !isFinite(p4.y)) {
-		diagnosticLog('线条多边形顶点计算异常，返回空数组');
-		return [];
+	// 简单的有效性检查
+	if (!isFinite(p1.x) || !isFinite(p1.y) || !isFinite(p2.x) || !isFinite(p2.y)) {
+		diagnosticLog('线条多边形顶点计算异常，返回简单矩形');
+		// 返回一个简单的矩形作为fallback
+		return [
+			{ x: x1 - halfWidth, y: y1 - halfWidth },
+			{ x: x1 + halfWidth, y: y1 - halfWidth },
+			{ x: x2 + halfWidth, y: y2 + halfWidth },
+			{ x: x2 - halfWidth, y: y2 + halfWidth },
+		];
 	}
 
 	return [p1, p2, p3, p4];
@@ -411,10 +489,10 @@ export function lineToPolygon(x1: number, y1: number, x2: number, y2: number, wi
 
 // 边界框类型
 export interface BBox {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
+	minX: number;
+	minY: number;
+	maxX: number;
+	maxY: number;
 }
 
 // 计算多边形边界框

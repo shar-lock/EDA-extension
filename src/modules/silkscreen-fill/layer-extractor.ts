@@ -6,16 +6,52 @@
  */
 
 import type { Polygon } from './utils/clipper';
-import { fetchComponentFootprints, fetchPcbData, getComponentFootprint, parsePolygonSourceArray } from './utils/api';
-import {
-	arcToPolygon,
-	arcToPolygonWithCenter,
-	bboxesIntersect,
-	getPolygonBBox,
-	lineToPolygon,
-} from './utils/clipper';
+import { fetchComponentFootprints, fetchPcbData, getComponentFootprint } from './utils/api';
+import { bboxesIntersect, getPolygonBBox } from './utils/clipper';
 import { captureError, DIAGNOSTIC_MODE, diagnosticLog, endTimer, logAPICall, logAPIReturn, startTimer } from './utils/diagnostic';
-import { parseArc, parseFill, parseLine, parsePoly, parseString } from './utils/footprint-parser';
+import { parseString } from './utils/footprint-parser';
+
+// LRU缓存机制，防止内存泄漏
+class LRUCache {
+  private cache = new Map<string, Polygon[]>();
+  private maxSize = 1000; // 最大缓存数量
+
+  get(key: string): Polygon[] | undefined {
+    const value = this.cache.get(key);
+    if (value) {
+      // 移动到末尾（最近使用）
+      this.cache.delete(key);
+      this.cache.set(key, value);
+    }
+    return value;
+  }
+
+  set(key: string, value: Polygon[]): void {
+    if (this.cache.size >= this.maxSize) {
+      // 删除最久未使用的
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+    this.cache.set(key, value);
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
+// 全局缓存实例
+const polygonCache = new LRUCache();
+
+// 性能监控计数器
+const performanceMetrics = {
+  totalCalls: 0,
+  totalTime: 0,
+  cacheHits: 0,
+  cacheMisses: 0,
+  arcCalculations: 0,
+  lineCalculations: 0,
+};
 
 /**
  * 丝印图元对象
@@ -47,11 +83,11 @@ async function extractLinePrimitive(data: any, layerId: number): Promise<Silkscr
 	}
 
 	// 支持多种坐标格式
-	const startX = data.startX !== undefined ? data.startX : data.x1;
-	const startY = data.startY !== undefined ? data.startY : data.y1;
-	const endX = data.endX !== undefined ? data.endX : data.x2;
-	const endY = data.endY !== undefined ? data.endY : data.y2;
-	const lineWidth = data.strokeWidth || data.width || 0.1;
+	const startX = data.startX;
+	const startY = data.startY;
+	const endX = data.endX;
+	const endY = data.endY;
+	const lineWidth = data.lineWidth || data.width || 0.1;
 
 	if (startX === undefined || startY === undefined || endX === undefined || endY === undefined) {
 		diagnosticLog(`直线数据缺少必要的坐标信息`, data);
@@ -83,140 +119,20 @@ async function extractArcPrimitive(data: any, layerId: number): Promise<Silkscre
 		return null;
 	}
 
-	// 检查是否已经有解析后的数据（来自 footprint-parser）
-	if (data.centerX !== undefined && data.centerY !== undefined && data.radius !== undefined) {
-		return {
-			id: `arc_${data.centerX}_${data.centerY}_${data.radius}`,
-			type: 'arc',
-			data: {
-				centerX: data.centerX,
-				centerY: data.centerY,
-				radius: data.radius,
-				startAngle: data.startAngle || 0,
-				endAngle: data.endAngle || 0,
-				arcAngle: data.counterclockwise ? 90 : -90,
-				lineWidth: data.strokeWidth || data.width || 0.1,
-			},
-			layerId,
-		};
-	}
-
-	// 检查是否是Segment格式（有x1, y1, x2, y2, angle）
-	if (data.x1 !== undefined && data.y1 !== undefined && data.x2 !== undefined && data.y2 !== undefined && data.angle !== undefined) {
-		// 使用footprint-parser的parseArc函数来计算圆心等信息
-		diagnosticLog(`使用Segment格式解析圆弧: (${data.x1}, ${data.y1}) -> (${data.x2}, ${data.y2}) angle=${data.angle}`);
-		const parsed = parseArc({
-			...data,
-			startX: data.x1,
-			startY: data.y1,
-			endX: data.x2,
-			endY: data.y2,
-			layerId,
-		});
-		if (!parsed) {
-			diagnosticLog(`解析圆弧失败`);
-			return null;
-		}
-
-		// 计算arcAngle（转换为角度）
-		// parsed.endAngle和parsed.startAngle是弧度，需要转换为角度
-		const arcAngleDegrees = (parsed.endAngle - parsed.startAngle) * (180 / Math.PI) * (parsed.counterclockwise ? 1 : -1);
-
-		return {
-			id: `arc_${parsed.centerX}_${parsed.centerY}_${parsed.radius}`,
-			type: 'arc',
-			data: {
-				centerX: parsed.centerX,
-				centerY: parsed.centerY,
-				radius: parsed.radius,
-				startAngle: parsed.startAngle,
-				endAngle: parsed.endAngle,
-				arcAngle: arcAngleDegrees, // 使用角度值，与arcToPolygon函数兼容
-				lineWidth: data.strokeWidth || 0.1,
-			},
-			layerId,
-		};
-	}
-
-	// 否则使用 footprint-parser 解析
-	const parsed = parseArc({ ...data, layerId });
-	if (!parsed) {
-		return null;
-	}
-
 	return {
-		id: `arc_${parsed.centerX}_${parsed.centerY}_${parsed.radius}`,
+		id: `arc_${data.centerX}_${data.centerY}_${data.radius}`,
 		type: 'arc',
 		data: {
-			centerX: parsed.centerX,
-			centerY: parsed.centerY,
-			radius: parsed.radius,
-			startAngle: parsed.startAngle,
-			endAngle: parsed.endAngle,
-			arcAngle: (parsed.endAngle - parsed.startAngle) * (parsed.counterclockwise ? 1 : -1),
-			lineWidth: parsed.strokeWidth,
+			startX: data.startX,
+			startY: data.startY,
+			endX: data.endX,
+			endY: data.endY,
+			mode: data.mode,
+			angle: data.angle,
+			lineWidth: data.lineWidth || 0.1,
 		},
 		layerId,
 	};
-}
-
-/**
- * 从原始 EDA 图元对象中提取多边形/折线/填充数据
- * 使用 api.ts 中的 parsePolygonSourceArray 函数解析
- */
-async function extractPolygonPrimitive(rawPrimitive: any, layerId: number, primitiveType: 'polyline' | 'fill'): Promise<SilkscreenPrimitive | null> {
-	if (!rawPrimitive || typeof rawPrimitive.getState_PrimitiveId !== 'function') {
-		return null;
-	}
-
-	const primitiveId = rawPrimitive.getState_PrimitiveId();
-
-	// 使用 api.ts 中的 parsePolygonSourceArray 函数解析多边形数据
-	let sourceArray: any[] = [];
-
-	// 尝试获取复杂多边形数据
-	if (rawPrimitive.getState_ComplexPolygon && typeof rawPrimitive.getState_ComplexPolygon === 'function') {
-		try {
-			const complexPolygon = rawPrimitive.getState_ComplexPolygon();
-			if (Array.isArray(complexPolygon) && complexPolygon.length > 0) {
-				sourceArray = Array.isArray(complexPolygon[0]) ? complexPolygon[0] : complexPolygon;
-			}
-		}
-		catch (e) {
-			diagnosticLog(`${primitiveType} ${primitiveId} getState_ComplexPolygon 失败:`, e);
-		}
-	}
-
-	// 如果复杂多边形解析失败，尝试其他方式
-	if (sourceArray.length === 0 && rawPrimitive.getState_Polygon && typeof rawPrimitive.getState_Polygon === 'function') {
-		try {
-			const polygonState = rawPrimitive.getState_Polygon();
-			if (polygonState && Array.isArray(polygonState)) {
-				sourceArray = polygonState;
-			}
-			else if (polygonState && polygonState.polygon && Array.isArray(polygonState.polygon)) {
-				sourceArray = polygonState.polygon;
-			}
-		}
-		catch (e) {
-			diagnosticLog(`${primitiveType} ${primitiveId} getState_Polygon 失败:`, e);
-		}
-	}
-
-	// 使用 parsePolygonSourceArray 解析点数据
-	if (sourceArray.length > 0) {
-		const parsed = parsePolygonSourceArray(sourceArray);
-		if (parsed.points.length >= 3) {
-			return {
-				id: primitiveId,
-				type: 'polygon',
-				data: { points: parsed.points },
-				layerId,
-			};
-		}
-	}
-
-	return null;
 }
 
 /**
@@ -252,61 +168,6 @@ async function extractTextPrimitive(rawPrimitive: any, layerId: number): Promise
 	}
 
 	return null;
-}
-
-/**
- * 批量从原始 EDA 图元中提取数据，使用 footprint-parser.ts 的解析逻辑
- */
-async function batchExtractPrimitives(
-	layerId: number,
-	primitiveType: 'line' | 'arc' | 'polyline' | 'fill' | 'string',
-	rawPrimitives: any[],
-): Promise<SilkscreenPrimitive[]> {
-	const primitives: SilkscreenPrimitive[] = [];
-
-	for (const rawPrimitive of rawPrimitives) {
-		let primitive: SilkscreenPrimitive | null = null;
-
-		switch (primitiveType) {
-			case 'line':
-				primitive = await extractLinePrimitive(rawPrimitive, layerId);
-				break;
-			case 'arc':
-				primitive = await extractArcPrimitive(rawPrimitive, layerId);
-				break;
-			case 'polyline':
-			case 'fill':
-				primitive = await extractPolygonPrimitive(rawPrimitive, layerId, primitiveType);
-				break;
-			case 'string':
-				primitive = await extractTextPrimitive(rawPrimitive, layerId);
-				break;
-		}
-
-		if (primitive) {
-			primitives.push(primitive);
-		}
-	}
-
-	return primitives;
-}
-
-/**
- * 从 footprint-parser 解析的多边形数据中提取图元
- */
-async function extractPolygonPrimitiveFromParser(data: any, layerId: number): Promise<SilkscreenPrimitive | null> {
-	if (!data || !data.points || data.points.length < 3) {
-		return null;
-	}
-
-	return {
-		id: `polygon_${data.points.length}`,
-		type: 'polygon',
-		data: {
-			points: data.points,
-		},
-		layerId,
-	};
 }
 
 /**
@@ -353,10 +214,12 @@ async function extractSilkScreenPrimitivesFromFootprint(
 	footprintData: any,
 	layerId: number,
 	componentId: string,
+	componentX: number = 0,
+	componentY: number = 0,
 ): Promise<SilkscreenPrimitive[]> {
 	startTimer('extractSilkScreenPrimitivesFromFootprint');
 	logAPICall('extractSilkScreenPrimitivesFromFootprint', [layerId, componentId]);
-	diagnosticLog(`[${componentId}] 开始从封装数据中提取丝印层图元`, `图层ID: ${layerId}`);
+	diagnosticLog(`[${componentId}] 开始从封装数据中提取丝印层图元`, `图层ID: ${layerId}, 元件位置: (${componentX}, ${componentY})`);
 
 	const primitives: SilkscreenPrimitive[] = [];
 
@@ -387,7 +250,10 @@ async function extractSilkScreenPrimitivesFromFootprint(
 				// 处理直接的line类型（如果存在）
 				diagnosticLog(`[${componentId}] 提取直接直线图元`);
 				const primitive = await extractLinePrimitive({
-					...silkShape,
+					startX: (silkShape.x1 || 0) + componentX,
+					startY: (silkShape.y1 || 0) + componentY,
+					endX: (silkShape.x2 || 0) + componentX,
+					endY: (silkShape.y2 || 0) + componentY,
 					lineWidth: strokeWidth,
 				}, layerId);
 				if (primitive) {
@@ -405,7 +271,12 @@ async function extractSilkScreenPrimitivesFromFootprint(
 				// 处理直接的arc类型（如果存在）
 				diagnosticLog(`[${componentId}] 提取直接圆弧图元`);
 				const primitive = await extractArcPrimitive({
-					...silkShape,
+					startX: (silkShape.x1 || 0) + componentX,
+					startY: (silkShape.y1 || 0) + componentY,
+					endX: (silkShape.x2 || 0) + componentX,
+					endY: (silkShape.y2 || 0) + componentY,
+					mode: 'ARC',
+					angle: silkShape.angle,
 					lineWidth: strokeWidth,
 				}, layerId);
 				if (primitive) {
@@ -429,9 +300,12 @@ async function extractSilkScreenPrimitivesFromFootprint(
 
 						switch (segment.type) {
 							case 'line': {
-								// 处理直线段
+								// 处理直线段，添加元件位置偏移
 								const primitive = await extractLinePrimitive({
-									...segment,
+									startX: (segment.x1 || 0) + componentX,
+									startY: (segment.y1 || 0) + componentY,
+									endX: (segment.x2 || 0) + componentX,
+									endY: (segment.y2 || 0) + componentY,
 									lineWidth: strokeWidth,
 								}, layerId);
 								if (primitive) {
@@ -446,9 +320,14 @@ async function extractSilkScreenPrimitivesFromFootprint(
 							}
 
 							case 'arc': {
-								// 处理圆弧段
+								// 处理圆弧段，添加元件位置偏移
 								const primitive = await extractArcPrimitive({
-									...segment,
+									startX: (segment.x1 || 0) + componentX,
+									startY: (segment.y1 || 0) + componentY,
+									endX: (segment.x2 || 0) + componentX,
+									endY: (segment.y2 || 0) + componentY,
+									mode: 'ARC',
+									angle: segment.angle,
 									lineWidth: strokeWidth,
 								}, layerId);
 								if (primitive) {
@@ -486,7 +365,10 @@ async function extractSilkScreenPrimitivesFromFootprint(
 						// 填充通常使用多边形表示
 						if (segment.type === 'line') {
 							const primitive = await extractLinePrimitive({
-								...segment,
+								startX: (segment.x1 || 0) + componentX,
+								startY: (segment.y1 || 0) + componentY,
+								endX: (segment.x2 || 0) + componentX,
+								endY: (segment.y2 || 0) + componentY,
 								lineWidth: strokeWidth,
 							}, layerId);
 							if (primitive) {
@@ -561,7 +443,8 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 		logAPICall('fetchPcbData', []);
 		const pcbData = await fetchPcbData();
 		logAPIReturn('fetchPcbData', pcbData);
-
+		console.log('=======================获取pcbdata=========================');
+		console.log(pcbData);
 		if (!pcbData.components || pcbData.components.length === 0) {
 			diagnosticLog('没有获取到元件数据');
 			return primitives;
@@ -578,7 +461,8 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 			diagnosticLog('没有获取到封装数据');
 			return primitives;
 		}
-
+		console.log('=======================footprintMap===================');
+		console.log(footprintMap);
 		diagnosticLog(`获取到 ${footprintMap.size} 个封装数据`);
 
 		// 遍历所有元件，从封装数据中提取丝印层图元
@@ -586,17 +470,30 @@ export async function getLayerPrimitives(layerId: number): Promise<SilkscreenPri
 			const componentId = component.ref || component.designator || 'unknown';
 			diagnosticLog(`处理元件: ${componentId}`);
 
+			// 获取元件的位置信息
+			let componentX = 0;
+			let componentY = 0;
+			if (component.getState_X && typeof component.getState_X === 'function') {
+				componentX = await component.getState_X();
+			}
+			if (component.getState_Y && typeof component.getState_Y === 'function') {
+				componentY = await component.getState_Y();
+			}
+			diagnosticLog(`元件 ${componentId} 位置: (${componentX}, ${componentY})`);
+
 			// 使用 api.ts 中的函数获取元件的封装数据
 			const footprintData = getComponentFootprint(component, footprintMap);
 			if (!footprintData) {
 				diagnosticLog(`元件 ${componentId} 没有找到封装数据`);
 				continue;
 			}
-			// 从封装数据中提取丝印层图元
+			// 从封装数据中提取丝印层图元，传入元件位置作为坐标偏移
 			const silkPrimitives = await extractSilkScreenPrimitivesFromFootprint(
 				footprintData,
 				layerId,
 				componentId,
+				componentX,
+				componentY,
 			);
 
 			if (silkPrimitives.length > 0) {
@@ -672,6 +569,7 @@ function getPrimitiveBBox(primitive: SilkscreenPrimitive): { minX: number; minY:
 
 /**
  * 将丝印图元转换为多边形
+ * 使用内置的 PCB_MathPolygon.createPolygon() API 方法
  */
 export function primitiveToPolygons(primitive: SilkscreenPrimitive): Polygon[] {
 	// 检查缓存
@@ -685,37 +583,26 @@ export function primitiveToPolygons(primitive: SilkscreenPrimitive): Polygon[] {
 	switch (primitive.type) {
 		case 'track': {
 			const { startX, startY, endX, endY, lineWidth = 0.1 } = primitive.data;
-			const trackPoly = lineToPolygon(startX, startY, endX, endY, lineWidth);
+			// 创建线段的多边形表示（矩形）
+			const halfWidth = lineWidth / 2;
+			const trackPoly = createLinePolygon(startX, startY, endX, endY, halfWidth);
 			if (trackPoly.length > 0) {
 				polygons.push(trackPoly);
 			}
 			break;
 		}
 		case 'arc': {
-			const { centerX, centerY, radius, startAngle, endAngle, arcAngle, lineWidth = 0.1 } = primitive.data;
-			// 将圆弧转换为有宽度的多边形
-			// 直接使用圆心、半径和角度计算圆弧上的点
-			const arcPoints = arcToPolygonWithCenter(centerX, centerY, radius, startAngle, endAngle, 32);
-			if (arcPoints.length >= 2) {
-				// 将圆弧路径转换为有宽度的多边形
-				for (let i = 0; i < arcPoints.length - 1; i++) {
-					const segment = lineToPolygon(
-						arcPoints[i].x,
-						arcPoints[i].y,
-						arcPoints[i + 1].x,
-						arcPoints[i + 1].y,
-						lineWidth,
-					);
-					if (segment.length > 0) {
-						polygons.push(segment);
-					}
-				}
+			const { startX, startY, endX, endY, angle, lineWidth = 0.1 } = primitive.data;
+			// 生成圆弧多边形
+			const arcPoly = createArcPolygon(startX, startY, endX, endY, angle, lineWidth);
+			if (arcPoly.length > 0) {
+				polygons.push(arcPoly);
 			}
 			break;
 		}
 		case 'polygon': {
 			if (primitive.data.points && primitive.data.points.length >= 3) {
-				// 确保点是正确的 Point 类型，处理可能的 TPCB_PolygonSourceArray 格式
+				// 确保点是正确的 Point 类型
 				const points = primitive.data.points.map((p) => {
 					if (p && typeof p === 'object') {
 						return { x: Number(p.x), y: Number(p.y) };
@@ -754,6 +641,138 @@ export function primitiveToPolygons(primitive: SilkscreenPrimitive): Polygon[] {
 	}
 
 	return polygons;
+}
+
+/**
+ * 创建线段的多边形表示（矩形）
+ */
+function createLinePolygon(x1: number, y1: number, x2: number, y2: number, halfWidth: number): Polygon {
+	// 计算线段方向向量
+	const dx = x2 - x1;
+	const dy = y2 - y1;
+	const len = Math.sqrt(dx * dx + dy * dy);
+
+	if (len === 0) {
+		// 长度为0，返回一个正方形
+		return [
+			{ x: x1 - halfWidth, y: y1 - halfWidth },
+			{ x: x1 + halfWidth, y: y1 - halfWidth },
+			{ x: x1 + halfWidth, y: y1 + halfWidth },
+			{ x: x1 - halfWidth, y: y1 + halfWidth },
+		];
+	}
+
+	// 计算垂直方向（单位向量）
+	const ux = -dy / len;
+	const uy = dx / len;
+
+	// 计算四个顶点
+	return [
+		{ x: x1 + ux * halfWidth, y: y1 + uy * halfWidth },
+		{ x: x1 - ux * halfWidth, y: y1 - uy * halfWidth },
+		{ x: x2 - ux * halfWidth, y: y2 - uy * halfWidth },
+		{ x: x2 + ux * halfWidth, y: y2 + uy * halfWidth },
+	];
+}
+
+/**
+ * 创建圆弧的多边形表示
+ */
+function createArcPolygon(startX: number, startY: number, endX: number, endY: number, arcAngle: number, lineWidth: number): Polygon {
+	// 如果角度为0，返回线段
+	if (arcAngle === 0) {
+		return createLinePolygon(startX, startY, endX, endY, lineWidth / 2);
+	}
+
+	// 计算圆弧的几何信息
+	const arcInfo = calculateArcInfo(startX, startY, endX, endY, arcAngle);
+	if (!arcInfo) {
+		return createLinePolygon(startX, startY, endX, endY, lineWidth / 2);
+	}
+
+	const { centerX, centerY, radius, startAngle, endAngle } = arcInfo;
+	const halfWidth = lineWidth / 2;
+
+	// 生成圆弧上的点（内外边界）
+	const segments = Math.max(8, Math.floor(Math.abs(arcAngle) / 10));
+	const innerPoints: Point[] = [];
+	const outerPoints: Point[] = [];
+
+	for (let i = 0; i <= segments; i++) {
+		const t = i / segments;
+		const angle = startAngle + (endAngle - startAngle) * t;
+		const cos = Math.cos(angle);
+		const sin = Math.sin(angle);
+
+		// 内边界点（半径减去一半线宽）
+		const innerRadius = Math.max(0, radius - halfWidth);
+		innerPoints.push({
+			x: centerX + innerRadius * cos,
+			y: centerY + innerRadius * sin,
+		});
+
+		// 外边界点（半径加上一半线宽）
+		const outerRadius = radius + halfWidth;
+		outerPoints.push({
+			x: centerX + outerRadius * cos,
+			y: centerY + outerRadius * sin,
+		});
+	}
+
+	// 组合内外边界点形成闭合多边形（逆时针）
+	// 从内边界开始，然后是外边界的逆序
+	return [...innerPoints, ...outerPoints.reverse()];
+}
+
+/**
+ * 计算圆弧的几何信息
+ */
+function calculateArcInfo(startX: number, startY: number, endX: number, endY: number, arcAngle: number): {
+	centerX: number;
+	centerY: number;
+	radius: number;
+	startAngle: number;
+	endAngle: number;
+} | null {
+	// 计算弦长
+	const dx = endX - startX;
+	const dy = endY - startY;
+	const d = Math.sqrt(dx * dx + dy * dy);
+	if (d === 0) {
+		return null;
+	}
+
+	// 将角度转换为弧度
+	const angleRad = (arcAngle * Math.PI) / 180;
+
+	// 计算半径
+	const radius = Math.abs(d / (2 * Math.sin(angleRad / 2)));
+	if (!isFinite(radius) || radius > 10000 || radius < 0.001) {
+		return null;
+	}
+
+	// 计算中点
+	const midX = (startX + endX) / 2;
+	const midY = (startY + endY) / 2;
+
+	// 计算垂直向量
+	const h = d / (2 * Math.tan(angleRad / 2));
+	const nx = -(endY - startY) / d;
+	const ny = (endX - startX) / d;
+
+	// 计算圆心
+	const centerX = midX - h * nx;
+	const centerY = midY - h * ny;
+
+	if (!isFinite(centerX) || !isFinite(centerY)) {
+		return null;
+	}
+
+	// 计算起始和终止角度
+	const startAngle = Math.atan2(startY - centerY, startX - centerX);
+	const endAngle = startAngle + angleRad;
+
+	return { centerX, centerY, radius, startAngle, endAngle };
 }
 
 /**
