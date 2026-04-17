@@ -14,6 +14,34 @@ export interface Point {
 
 export type Polygon = Point[];
 export type Polygons = Polygon[];
+export type ComplexPolygons = IPCB_ComplexPolygon[];
+const complexPolygonSourceMap = new WeakMap<object, TPCB_PolygonSourceArray[]>();
+
+export function registerComplexPolygonSource(
+	complexPolygon: IPCB_ComplexPolygon,
+	sourceArray: TPCB_PolygonSourceArray,
+): void {
+	if (!complexPolygon || !Array.isArray(sourceArray) || sourceArray.length === 0) {
+		return;
+	}
+	const key = complexPolygon as unknown as object;
+	const existing = complexPolygonSourceMap.get(key) || [];
+	complexPolygonSourceMap.set(key, [...existing, sourceArray]);
+}
+
+function registerComplexPolygonSources(
+	complexPolygon: IPCB_ComplexPolygon,
+	sourceArrays: TPCB_PolygonSourceArray[],
+): void {
+	if (!complexPolygon || !Array.isArray(sourceArrays) || sourceArrays.length === 0) {
+		return;
+	}
+	const valid = sourceArrays.filter(item => Array.isArray(item) && item.length > 0);
+	if (valid.length === 0) {
+		return;
+	}
+	complexPolygonSourceMap.set(complexPolygon as unknown as object, valid);
+}
 
 // 计算多边形面积（用于判断方向）
 // 正值表示逆时针，负值表示顺时针
@@ -30,11 +58,331 @@ function calculateSignedArea(polygon: Polygon): number {
 	return area / 2;
 }
 
-// 将 Polygons 转换为 Clipper Shape
-// 使用正确的方向：外环逆时针，内环顺时针
-function toShape(polygons: Polygons, isOuterRing: boolean = true): Shape {
+function appendArcPoints(points: Polygon, start: Point, end: Point, arcAngle: number): void {
+	const dx = end.x - start.x;
+	const dy = end.y - start.y;
+	const chord = Math.sqrt(dx * dx + dy * dy);
+	const angleAbs = Math.abs(arcAngle);
+	let segments = Math.max(16, Math.ceil(angleAbs / 4));
+	if (angleAbs > 0.001 && angleAbs < 179.999) {
+		const angleRad = (angleAbs * Math.PI) / 180;
+		const radius = Math.abs(chord / (2 * Math.sin(angleRad / 2)));
+		if (Number.isFinite(radius) && radius > 0) {
+			const arcLength = radius * angleRad;
+			segments = Math.max(segments, Math.ceil(arcLength / 2));
+		}
+	}
+	segments = Math.min(256, segments);
+	const arcPoints = arcToPolygon(start.x, start.y, end.x, end.y, arcAngle, segments);
+	if (arcPoints.length >= 2) {
+		points.push(...arcPoints.slice(1));
+	}
+	else {
+		points.push(end);
+	}
+}
+
+function normalizeArcArgs(a: number, b: number, c: number): { arcAngle: number; endX: number; endY: number } {
+	// 官方文档描述为 [arcAngle, endX, endY]，
+	// 但实测/示例中常出现 [endX, endY, arcAngle]，这里同时兼容两种格式。
+	const isAngleA = Number.isFinite(a) && Math.abs(a) <= 3600;
+	const isAngleC = Number.isFinite(c) && Math.abs(c) <= 3600;
+
+	if (isAngleC && !isAngleA) {
+		return { arcAngle: c, endX: a, endY: b };
+	}
+	if (isAngleA && !isAngleC) {
+		return { arcAngle: a, endX: b, endY: c };
+	}
+	if (isAngleC) {
+		return { arcAngle: c, endX: a, endY: b };
+	}
+	return { arcAngle: a, endX: b, endY: c };
+}
+
+function appendBezierPoints(points: Polygon, p0: Point, p1: Point, p2: Point, p3: Point): void {
+	const segments = 20;
+	for (let i = 1; i <= segments; i++) {
+		const t = i / segments;
+		const mt = 1 - t;
+		const x = (mt ** 3) * p0.x
+			+ 3 * (mt ** 2) * t * p1.x
+			+ 3 * mt * (t ** 2) * p2.x
+			+ (t ** 3) * p3.x;
+		const y = (mt ** 3) * p0.y
+			+ 3 * (mt ** 2) * t * p1.y
+			+ 3 * mt * (t ** 2) * p2.y
+			+ (t ** 3) * p3.y;
+		points.push({ x, y });
+	}
+}
+
+function sourceArrayToPolygon(sourceArray: TPCB_PolygonSourceArray): Polygon {
+	if (!Array.isArray(sourceArray) || sourceArray.length === 0) {
+		return [];
+	}
+
+	// R x y width height rot round
+	if (sourceArray[0] === 'R') {
+		const [, x, y, width, height] = sourceArray as any[];
+		if ([x, y, width, height].every(Number.isFinite)) {
+			return [
+				{ x, y },
+				{ x: x + width, y },
+				{ x: x + width, y: y + height },
+				{ x, y: y + height },
+				{ x, y },
+			];
+		}
+		return [];
+	}
+
+	// CIRCLE cx cy radius
+	if (sourceArray[0] === 'CIRCLE') {
+		const [, cx, cy, radius] = sourceArray as any[];
+		if ([cx, cy, radius].every(Number.isFinite) && radius > 0) {
+			const points: Polygon = [];
+			const segments = 36;
+			for (let i = 0; i <= segments; i++) {
+				const angle = (Math.PI * 2 * i) / segments;
+				points.push({
+					x: cx + radius * Math.cos(angle),
+					y: cy + radius * Math.sin(angle),
+				});
+			}
+			return points;
+		}
+		return [];
+	}
+
+	const points: Polygon = [];
+	let i = 0;
+	let currentCommand: 'L' | 'ARC' | 'CARC' | 'C' = 'L';
+	let current: Point | null = null;
+
+	while (i < sourceArray.length) {
+		const token = sourceArray[i];
+		if (typeof token === 'string') {
+			if (token === 'L' || token === 'ARC' || token === 'CARC' || token === 'C') {
+				currentCommand = token;
+			}
+			i++;
+			continue;
+		}
+
+		if (currentCommand === 'ARC' || currentCommand === 'CARC') {
+			if (!current) {
+				break;
+			}
+			const a = sourceArray[i] as number;
+			const b = sourceArray[i + 1] as number;
+			const c = sourceArray[i + 2] as number;
+			const { arcAngle, endX, endY } = normalizeArcArgs(a, b, c);
+			if ([arcAngle, endX, endY].every(Number.isFinite)) {
+				const endPoint = { x: endX, y: endY };
+				appendArcPoints(points, current, endPoint, arcAngle);
+				current = endPoint;
+				i += 3;
+				currentCommand = 'L';
+				continue;
+			}
+			i++;
+			continue;
+		}
+
+		if (currentCommand === 'C') {
+			if (!current) {
+				break;
+			}
+			const x1 = sourceArray[i] as number;
+			const y1 = sourceArray[i + 1] as number;
+			const x2 = sourceArray[i + 2] as number;
+			const y2 = sourceArray[i + 3] as number;
+			const x3 = sourceArray[i + 4] as number;
+			const y3 = sourceArray[i + 5] as number;
+			if ([x1, y1, x2, y2, x3, y3].every(Number.isFinite)) {
+				const p1 = { x: x1, y: y1 };
+				const p2 = { x: x2, y: y2 };
+				const p3 = { x: x3, y: y3 };
+				appendBezierPoints(points, current, p1, p2, p3);
+				current = p3;
+				i += 6;
+				currentCommand = 'L';
+				continue;
+			}
+			i++;
+			continue;
+		}
+
+		const x = sourceArray[i] as number;
+		const y = sourceArray[i + 1] as number;
+		if (Number.isFinite(x) && Number.isFinite(y)) {
+			const point = { x, y };
+			points.push(point);
+			current = point;
+			i += 2;
+			continue;
+		}
+		i++;
+	}
+
+	if (points.length >= 3) {
+		const first = points[0];
+		const last = points[points.length - 1];
+		if (first.x !== last.x || first.y !== last.y) {
+			points.push({ ...first });
+		}
+	}
+
+	return points;
+}
+
+function toSourceArray(polygon: Polygon): TPCB_PolygonSourceArray {
+	const sourceArray: any[] = [];
+	if (polygon.length < 3) {
+		return sourceArray as TPCB_PolygonSourceArray;
+	}
+	const normalizedPolygon = [...polygon];
+	if (normalizedPolygon.length >= 2) {
+		const first = normalizedPolygon[0];
+		const last = normalizedPolygon[normalizedPolygon.length - 1];
+		if (first.x === last.x && first.y === last.y) {
+			normalizedPolygon.pop();
+		}
+	}
+	if (normalizedPolygon.length < 3) {
+		return sourceArray as TPCB_PolygonSourceArray;
+	}
+	sourceArray.push(normalizedPolygon[0].x, normalizedPolygon[0].y);
+	sourceArray.push('L');
+	for (let i = 1; i < normalizedPolygon.length; i++) {
+		sourceArray.push(normalizedPolygon[i].x, normalizedPolygon[i].y);
+	}
+	const first = normalizedPolygon[0];
+	const last = normalizedPolygon[normalizedPolygon.length - 1];
+	if (first.x !== last.x || first.y !== last.y) {
+		sourceArray.push(first.x, first.y);
+	}
+	return sourceArray as TPCB_PolygonSourceArray;
+}
+
+function ensureOrientation(polygon: Polygon, isOuter: boolean): Polygon {
+	if (polygon.length < 3) {
+		return polygon;
+	}
+	const area = calculateSignedArea(polygon);
+	// 外环使用逆时针，孔洞使用顺时针
+	if (isOuter) {
+		return area < 0 ? [...polygon].reverse() : polygon;
+	}
+	return area > 0 ? [...polygon].reverse() : polygon;
+}
+
+function fromShapeAsSingleComplexPolygon(shape: Shape): IPCB_ComplexPolygon | null {
+	const lowLevelPolygons = (shape.mapToLower() as Polygons).filter(p => p.length >= 3);
+	if (lowLevelPolygons.length === 0) {
+		return null;
+	}
+	const sorted = [...lowLevelPolygons].sort((a, b) => Math.abs(calculateSignedArea(b)) - Math.abs(calculateSignedArea(a)));
+	const outer = ensureOrientation(sorted[0], true);
+	const holes = sorted.slice(1).map(p => ensureOrientation(p, false));
+	const sourceArrays = [outer, ...holes].map(toSourceArray).filter(item => item.length > 0) as TPCB_PolygonSourceArray[];
+	if (sourceArrays.length === 0) {
+		return null;
+	}
+	const complexPolygon = eda.pcb_MathPolygon.createComplexPolygon(sourceArrays as unknown as TPCB_PolygonSourceArray);
+	if (!complexPolygon) {
+		return null;
+	}
+	registerComplexPolygonSources(complexPolygon, sourceArrays);
+	return complexPolygon;
+}
+
+function normalizeSourceArrays(raw: any): TPCB_PolygonSourceArray[] {
+	if (Array.isArray(raw)) {
+		if (raw.length > 0 && Array.isArray(raw[0])) {
+			return raw.filter((item: any) => Array.isArray(item)) as TPCB_PolygonSourceArray[];
+		}
+		return [raw as TPCB_PolygonSourceArray];
+	}
+	if (raw && Array.isArray(raw.polygon)) {
+		return [raw.polygon as TPCB_PolygonSourceArray];
+	}
+	return [];
+}
+
+function complexPolygonToPolygons(complexPolygon: IPCB_ComplexPolygon): Polygons {
+	const registeredSourceArrays = complexPolygonSourceMap.get(complexPolygon as unknown as object);
+	if (registeredSourceArrays && registeredSourceArrays.length > 0) {
+		const polygons = registeredSourceArrays
+			.map(sourceArrayToPolygon)
+			.filter((polygon: Polygon) => polygon.length >= 3);
+		if (polygons.length > 0) {
+			return polygons;
+		}
+	}
+
+	const candidateGetters = [
+		'getState_SourceArray',
+		'getState_PolygonSourceArray',
+		'getState_Polygon',
+		'getState_ComplexPolygon',
+	];
+
+	for (const getter of candidateGetters) {
+		const fn = (complexPolygon as any)?.[getter];
+		if (typeof fn !== 'function') {
+			continue;
+		}
+		try {
+			const raw = fn.call(complexPolygon);
+			const sourceArrays = normalizeSourceArrays(raw);
+			const polygons = sourceArrays
+				.map(sourceArrayToPolygon)
+				.filter((polygon: Polygon) => polygon.length >= 3);
+			if (polygons.length > 0) {
+				return polygons;
+			}
+		}
+		catch {
+			// 尝试下一个 getter
+		}
+	}
+
+	return [];
+}
+
+function complexPolygonsToPolygons(complexPolygons: ComplexPolygons): Polygons {
+	return complexPolygons.flatMap(complexPolygon => complexPolygonToPolygons(complexPolygon));
+}
+
+export function getComplexPolygonBBox(complexPolygon: IPCB_ComplexPolygon): BBox | null {
+	const polygons = complexPolygonToPolygons(complexPolygon);
+	if (polygons.length === 0) {
+		return null;
+	}
+	let merged: BBox | null = null;
+	for (const polygon of polygons) {
+		const bbox = getPolygonBBox(polygon);
+		if (!bbox) {
+			continue;
+		}
+		if (!merged) {
+			merged = { ...bbox };
+			continue;
+		}
+		merged.minX = Math.min(merged.minX, bbox.minX);
+		merged.minY = Math.min(merged.minY, bbox.minY);
+		merged.maxX = Math.max(merged.maxX, bbox.maxX);
+		merged.maxY = Math.max(merged.maxY, bbox.maxY);
+	}
+	return merged;
+}
+
+function toShape(polygons: ComplexPolygons, isOuterRing: boolean = true): Shape {
 	// 处理多边形方向
-	const processedPolygons = polygons.map((polygon) => {
+	const flattenPolygons = complexPolygonsToPolygons(polygons);
+	const processedPolygons = flattenPolygons.map((polygon) => {
 		if (polygon.length < 3)
 			return polygon;
 
@@ -53,13 +401,81 @@ function toShape(polygons: Polygons, isOuterRing: boolean = true): Shape {
 }
 
 // 将 Clipper Shape 转换为 Polygons
-function fromShape(shape: Shape): Polygons {
-	return shape.mapToLower() as Polygons;
+function fromShape(shape: Shape): ComplexPolygons {
+	const lowLevelPolygons = shape.mapToLower() as Polygons;
+	const results: ComplexPolygons = [];
+	for (const polygon of lowLevelPolygons) {
+		if (polygon.length < 3) {
+			continue;
+		}
+		const sourceArray = toSourceArray(polygon);
+		const complexPolygon = eda.pcb_MathPolygon.createComplexPolygon(sourceArray);
+		if (complexPolygon) {
+			registerComplexPolygonSource(complexPolygon, sourceArray);
+			results.push(complexPolygon);
+		}
+	}
+	return results;
+}
+
+function bboxToPolygon(bbox: BBox): Polygon {
+	return [
+		{ x: bbox.minX, y: bbox.minY },
+		{ x: bbox.maxX, y: bbox.minY },
+		{ x: bbox.maxX, y: bbox.maxY },
+		{ x: bbox.minX, y: bbox.maxY },
+	];
+}
+
+export function bboxToShape(bboxes: BBox[]): Shape {
+	const polygons = bboxes
+		.filter(bbox => Number.isFinite(bbox.minX)
+			&& Number.isFinite(bbox.minY)
+			&& Number.isFinite(bbox.maxX)
+			&& Number.isFinite(bbox.maxY)
+			&& bbox.maxX > bbox.minX
+			&& bbox.maxY > bbox.minY)
+		.map(bbox => bboxToPolygon(bbox));
+	return new Shape(polygons, true, true, true);
+}
+
+export function shapeToBBoxes(shape: Shape): BBox[] {
+	const polygons = shape.mapToLower() as Polygons;
+	const bboxes: BBox[] = [];
+	for (const polygon of polygons) {
+		const bbox = getPolygonBBox(polygon);
+		if (bbox) {
+			bboxes.push(bbox);
+		}
+	}
+	return bboxes;
+}
+
+export function differenceBBoxes(
+	subjectBBox: BBox,
+	clipBBoxes: BBox[],
+): ComplexPolygons {
+	const subjectShape = bboxToShape([subjectBBox]);
+	const clipShape = bboxToShape(clipBBoxes);
+	console.log('=====================subjectShape====================');
+	console.log(subjectShape);
+	console.log('=====================clipShape====================');
+	console.log(clipShape);
+	const resultShape = clipBBoxes.length > 0 ? subjectShape.difference(clipShape) : subjectShape;
+	console.log('=====================resultShape====================');
+	console.log(resultShape);
+	const singleComplexPolygon = fromShapeAsSingleComplexPolygon(resultShape);
+	console.log('=====================singleComplexPolygon====================');
+	console.log(singleComplexPolygon);
+	if (singleComplexPolygon) {
+		return [singleComplexPolygon];
+	}
+	return fromShape(resultShape);
 }
 
 // 执行多边形差集运算
 // subject - clip = 结果
-export function difference(subject: Polygons, clip: Polygons): Polygons {
+export function difference(subject: ComplexPolygons, clip: ComplexPolygons): ComplexPolygons {
 	startTimer('clipper_difference');
 	diagnosticLog(`Clipper差集运算开始: subject=${subject.length}, clip=${clip.length}`);
 
@@ -83,13 +499,16 @@ export function difference(subject: Polygons, clip: Polygons): Polygons {
 	try {
 		const subjectShape = toShape(subject, true);
 		const clipShape = toShape(clip, true);
-
+		console.log('=====================toshape====================');
+		console.log(subjectShape);
+		console.log(clipShape);
 		diagnosticLog('Clipper输入准备完成，执行difference操作...');
 
 		// 使用 Clipper 的 difference 方法
 		const resultShape = subjectShape.difference(clipShape);
 		const result = fromShape(resultShape);
-
+		console.log('=====================fromshape====================');
+		console.log(result);
 		endTimer('clipper_difference', 'Clipper差集运算成功: ');
 		diagnosticLog(`差集运算成功: ${result.length} 个结果多边形`);
 
@@ -104,7 +523,7 @@ export function difference(subject: Polygons, clip: Polygons): Polygons {
 }
 
 // 执行多边形并集运算
-export function union(subject: Polygons, clip: Polygons): Polygons {
+export function union(subject: ComplexPolygons, clip: ComplexPolygons): ComplexPolygons {
 	startTimer('clipper_union');
 	diagnosticLog(`Clipper并集运算开始: subject=${subject.length}, clip=${clip.length}`);
 
@@ -119,8 +538,8 @@ export function union(subject: Polygons, clip: Polygons): Polygons {
 
 	// 验证输入数据
 	if (DIAGNOSTIC_MODE.ENABLED) {
-		validateClipperData(subject, '并集运算-subject');
-		validateClipperData(clip, '并集运算-clip');
+		validateClipperData(complexPolygonsToPolygons(subject), '并集运算-subject');
+		validateClipperData(complexPolygonsToPolygons(clip), '并集运算-clip');
 	}
 
 	try {
@@ -143,7 +562,7 @@ export function union(subject: Polygons, clip: Polygons): Polygons {
 }
 
 // 执行多边形交集运算
-export function intersection(subject: Polygons, clip: Polygons): Polygons {
+export function intersection(subject: ComplexPolygons, clip: ComplexPolygons): ComplexPolygons {
 	startTimer('clipper_intersection');
 	diagnosticLog(`Clipper交集运算开始: subject=${subject.length}, clip=${clip.length}`);
 
@@ -154,8 +573,8 @@ export function intersection(subject: Polygons, clip: Polygons): Polygons {
 
 	// 验证输入数据
 	if (DIAGNOSTIC_MODE.ENABLED) {
-		validateClipperData(subject, '交集运算-subject');
-		validateClipperData(clip, '交集运算-clip');
+		validateClipperData(complexPolygonsToPolygons(subject), '交集运算-subject');
+		validateClipperData(complexPolygonsToPolygons(clip), '交集运算-clip');
 	}
 
 	try {
@@ -411,7 +830,8 @@ function mergeWidthPolygons(polygons: Polygon[]): Polygon {
 		for (const point of allPoints) {
 			if (sourceArray.length === 0) {
 				sourceArray.push(point.x, point.y);
-			} else {
+			}
+			else {
 				sourceArray.push('L', point.x, point.y);
 			}
 		}
@@ -461,7 +881,8 @@ export function lineToPolygon(x1: number, y1: number, x2: number, y2: number, wi
 	if (len > 0) {
 		nx = -dy / len * halfWidth;
 		ny = dx / len * halfWidth;
-	} else {
+	}
+	else {
 		nx = 0;
 		ny = halfWidth;
 	}

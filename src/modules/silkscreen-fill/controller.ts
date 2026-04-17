@@ -10,18 +10,15 @@
 
 import type { FillRegionConfig } from './fill-generator';
 import { createFilledRegions } from './fill-generator';
-import { getLayerPolygons } from './layer-extractor';
 import { selectionToPolygon, waitForUserSelection } from './selection-handler';
-import { cleanPolygons, difference, getPolygonBBox } from './utils/clipper';
+import { differenceBBoxes } from './utils/clipper';
 import {
 	captureError,
 	DIAGNOSTIC_MODE,
 	diagnosticLog,
 	endTimer,
 	logPolygonInfo,
-	logPolygonsInfo,
 	startTimer,
-	validateClipperData,
 } from './utils/diagnostic';
 
 /**
@@ -133,10 +130,9 @@ export async function executeSilkscreenFill(
 		const selectionPolygon = selectionToPolygon(selectionResult.rect);
 		logPolygonInfo(selectionPolygon, '选区多边形');
 
-		// 步骤2: 智能提取丝印图元
-		// 只提取与选区相交的丝印图元，优化性能
+		// 步骤2: 获取所有器件BBox（最小实现）
 		// eslint-disable-next-line no-console
-		console.log('步骤2: 智能提取丝印图元...');
+		console.log('步骤2: 获取所有器件BBox...');
 		startTimer('step_extraction');
 
 		// 计算选区边界框
@@ -148,69 +144,91 @@ export async function executeSilkscreenFill(
 		};
 		diagnosticLog('选区边界框:', selectionBBox);
 
-		// 获取与选区相交的丝印多边形
-		const silkscreenPolygons = await getLayerPolygons(finalConfig.silkscreenLayerId, selectionBBox);
+		const pcbData = await eda.pcb_PrimitiveComponent.getAll();
+		const components = pcbData || [];
+		const componentBBoxes: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = [];
+
+		const pushBBoxIfIntersects = (bbox: any): void => {
+			if (!bbox) {
+				return;
+			}
+			const bboxMinX = Number(bbox.minX);
+			const bboxMinY = Number(bbox.minY);
+			const bboxMaxX = Number(bbox.maxX);
+			const bboxMaxY = Number(bbox.maxY);
+			if (![bboxMinX, bboxMinY, bboxMaxX, bboxMaxY].every(Number.isFinite)) {
+				return;
+			}
+			const intersects = !(bboxMaxX < selectionBBox.minX
+				|| bboxMinX > selectionBBox.maxX
+				|| bboxMaxY < selectionBBox.minY
+				|| bboxMinY > selectionBBox.maxY);
+			if (!intersects) {
+				return;
+			}
+			componentBBoxes.push({ minX: bboxMinX, minY: bboxMinY, maxX: bboxMaxX, maxY: bboxMaxY });
+		};
+
+		for (const component of components) {
+			const primitiveId = component?.getState_PrimitiveId();
+			if (!primitiveId) {
+				continue;
+			}
+			try {
+				// 1) 器件本体 bbox
+				const compBBox = await eda.pcb_Primitive.getPrimitivesBBox([primitiveId]);
+				pushBBoxIfIntersects(compBBox);
+
+				// 2) 位号（Designator）bbox
+				const primitiveAttrs = await eda.pcb_PrimitiveAttribute.getAll(primitiveId);
+				const designatorIds = (primitiveAttrs || [])
+					.filter((item: any) => item?.key === 'Designator')
+					.map((item: any) => item?.primitiveId)
+					.filter((id: any) => !!id);
+
+				if (designatorIds.length > 0) {
+					const designatorBBox = await eda.pcb_Primitive.getPrimitivesBBox(designatorIds);
+					pushBBoxIfIntersects(designatorBBox);
+				}
+			}
+			catch (error) {
+				diagnosticLog('获取器件BBox失败，跳过该器件', error);
+			}
+		}
 		endTimer('step_extraction', '丝印提取耗时: ');
 
 		// eslint-disable-next-line no-console
-		console.log(`丝印提取完成: ${silkscreenPolygons.length} 个多边形`);
-		logPolygonsInfo(silkscreenPolygons, '丝印多边形');
-
-		// 验证丝印多边形数据
-		if (DIAGNOSTIC_MODE.ENABLED) {
-			validateClipperData(silkscreenPolygons, '丝印多边形验证');
-		}
+		console.log(`器件BBox提取完成: ${componentBBoxes.length} 个BBox`);
 
 		// 步骤3: 执行补集运算（差集）
 		// eslint-disable-next-line no-console
 		console.log('步骤3: 执行补集运算...');
 		startTimer('step_difference');
 
-		// 执行差集运算：选区 - 丝印图元
-		// 如果没有任何丝印图元，直接填充整个选区
-		const polygonsToSubtract = silkscreenPolygons.length > 0 ? silkscreenPolygons : [];
+		// 执行差集运算：选区 - 器件BBox
+		const polygonsToSubtract = componentBBoxes;
 		diagnosticLog('差集运算输入:', {
 			subjectCount: 1,
 			clipCount: polygonsToSubtract.length,
 		});
-		logPolygonsInfo([selectionPolygon], '差集运算-subject');
-		logPolygonsInfo(polygonsToSubtract, '差集运算-clip');
-		console.log('---------------------selectionPolygon  polygonsToSubtract----------------------------------------');
-		console.log(selectionPolygon);
-		console.log(polygonsToSubtract);
-		const resultPolygons = difference([selectionPolygon], polygonsToSubtract);
-		console.log('---------------------获取resultPolygons----------------------------------------');
-		console.log(resultPolygons);
+		logPolygonInfo(selectionPolygon, '差集运算-subject');
+		const resultPolygons = differenceBBoxes(selectionBBox, polygonsToSubtract);
 		endTimer('step_difference', '差集运算耗时: ');
 		// eslint-disable-next-line no-console
 		console.log(`补集运算完成: ${resultPolygons.length} 个结果多边形`);
-		logPolygonsInfo(resultPolygons, '差集运算结果');
 
 		// 步骤4: 清理和优化结果
 		// eslint-disable-next-line no-console
 		console.log('步骤4: 清理结果多边形...');
 		startTimer('step_cleaning');
-
-		// 清理无效多边形
-		const cleanedPolygons = cleanPolygons(resultPolygons);
-
-		// 移除过小的区域（面积小于选区面积的0.1%）
-		const minArea = (selectionResult.rect.width * selectionResult.rect.height) * 0.001;
-		const filteredPolygons = cleanedPolygons.filter((polygon) => {
-			const bbox = getPolygonBBox(polygon);
-			if (!bbox)
-				return false;
-			// 计算近似面积
-			const area = (bbox.maxX - bbox.minX) * (bbox.maxY - bbox.minY);
-			return area > minArea;
-		});
+		// IPCB_ComplexPolygon 在 createComplexPolygon 阶段已经过基础合法性校验
+		const finalPolygons = resultPolygons.filter(Boolean);
 
 		endTimer('step_cleaning', '清理耗时: ');
 		// eslint-disable-next-line no-console
-		console.log(`清理完成: ${filteredPolygons.length} 个有效填充多边形`);
-		logPolygonsInfo(filteredPolygons, '最终填充多边形');
+		console.log(`清理完成: ${finalPolygons.length} 个有效填充多边形`);
 
-		if (filteredPolygons.length === 0) {
+		if (finalPolygons.length === 0) {
 			const warningMsg = '警告: 没有生成任何填充区域，可能选区完全被丝印覆盖或区域过小';
 			diagnosticLog(warningMsg);
 			console.warn(warningMsg);
@@ -230,7 +248,7 @@ export async function executeSilkscreenFill(
 		};
 		diagnosticLog('填充配置:', fillConfig);
 
-		createdIds = await createFilledRegions(filteredPolygons, fillConfig);
+		createdIds = await createFilledRegions(finalPolygons, fillConfig);
 
 		endTimer('step_generation', '填充生成耗时: ');
 		// eslint-disable-next-line no-console
@@ -244,12 +262,6 @@ export async function executeSilkscreenFill(
 		if (DIAGNOSTIC_MODE.ENABLED) {
 			diagnosticLog('============ 丝印层填充-诊断模式结束 ============');
 		}
-
-		// 显示成功提示
-		eda.sys_Dialog.showInformationMessage(
-			`丝印层填充完成！\n成功创建 ${createdIds.length} 个填充区域`,
-			'完成',
-		);
 
 		return createdIds;
 	}

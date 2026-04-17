@@ -5,7 +5,6 @@
  */
 
 // EPCB_LayerId 和 EPCB_PrimitiveFillMode 在 @jlceda/pro-api-types 中通过 declare global 声明，无需导入
-import type { Polygon } from './utils/clipper';
 import { diagnosticLog, logAPICall, logAPIReturn } from './utils/diagnostic';
 
 /**
@@ -30,7 +29,7 @@ export interface FillRegionConfig {
  * @returns 创建的填充区域ID数组
  */
 export async function createFilledRegions(
-	polygons: Polygon[],
+	polygons: IPCB_ComplexPolygon[],
 	config: FillRegionConfig,
 ): Promise<string[]> {
 	// 参数验证
@@ -56,9 +55,8 @@ export async function createFilledRegions(
 		for (let j = 0; j < batch.length; j++) {
 			const polygon = batch[j];
 			const globalIndex = i + j;
-
-			if (polygon.length < 3) {
-				diagnosticLog(`跳过无效多边形 ${globalIndex}: 点数 ${polygon.length}`);
+			if (!polygon) {
+				diagnosticLog(`跳过无效复杂多边形 ${globalIndex}`);
 				continue;
 			}
 
@@ -95,38 +93,11 @@ export async function createFilledRegions(
  * @internal
  */
 async function createSingleFill(
-	polygon: Polygon,
+	polygon: IPCB_ComplexPolygon,
 	config: FillRegionConfig,
 	index: number,
 ): Promise<string | null> {
-	logAPICall('createSingleFill', [{ index, points: polygon.length }]);
-
-	// 1. 将 Point[] 转换为 TPCB_PolygonSourceArray
-	// 格式: [x1, y1, 'L', x2, y2, x3, y3, ...]
-	const sourceArray: any[] = [];
-
-	if (polygon.length >= 3) {
-		// 从第一个点开始
-		sourceArray.push(polygon[0].x, polygon[0].y);
-		// 添加线段命令和后续点
-		for (let j = 1; j < polygon.length; j++) {
-			sourceArray.push('L', polygon[j].x, polygon[j].y);
-		}
-		// 闭合多边形（回到起点）
-		sourceArray.push('L', polygon[0].x, polygon[0].y);
-	}
-
-	if (sourceArray.length === 0) {
-		diagnosticLog(`跳过空多边形 ${index}`);
-		return null;
-	}
-
-	// 2. 创建 IPCB_Polygon
-	const polyObj = eda.pcb_MathPolygon.createPolygon(sourceArray);
-	if (!polyObj) {
-		diagnosticLog(`多边形数据无效 ${index}:`, sourceArray.slice(0, 10));
-		return null;
-	}
+	logAPICall('createSingleFill', [{ index, complexPolygon: true }]);
 
 	// 3. 获取填充模式
 	const fillModeValue = config.fillMode === 'hatched'
@@ -137,7 +108,7 @@ async function createSingleFill(
 	// 参数: layer, complexPolygon, net?, fillMode?, lineWidth?, primitiveLock?
 	const fill = await eda.pcb_PrimitiveFill.create(
 		config.layerId,
-		polyObj,
+		polygon as unknown as IPCB_Polygon,
 		config.netName || undefined,
 		fillModeValue,
 		0, // lineWidth
