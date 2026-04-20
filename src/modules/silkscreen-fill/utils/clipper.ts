@@ -29,6 +29,20 @@ export function registerComplexPolygonSource(
 	complexPolygonSourceMap.set(key, [...existing, sourceArray]);
 }
 
+export function registerComplexPolygonRawSource(
+	complexPolygon: IPCB_ComplexPolygon,
+	rawSource: any,
+): void {
+	if (!complexPolygon) {
+		return;
+	}
+	const sourceArrays = normalizeSourceArrays(rawSource);
+	if (sourceArrays.length === 0) {
+		return;
+	}
+	complexPolygonSourceMap.set(complexPolygon as unknown as object, sourceArrays);
+}
+
 function registerComplexPolygonSources(
 	complexPolygon: IPCB_ComplexPolygon,
 	sourceArrays: TPCB_PolygonSourceArray[],
@@ -305,6 +319,13 @@ function normalizeSourceArrays(raw: any): TPCB_PolygonSourceArray[] {
 		}
 		return [raw as TPCB_PolygonSourceArray];
 	}
+	// 常见返回结构：{ complexPolygon: TPCB_PolygonSourceArray[] | TPCB_PolygonSourceArray }
+	if (raw && Array.isArray(raw.complexPolygon)) {
+		if (raw.complexPolygon.length > 0 && Array.isArray(raw.complexPolygon[0])) {
+			return raw.complexPolygon.filter((item: any) => Array.isArray(item)) as TPCB_PolygonSourceArray[];
+		}
+		return [raw.complexPolygon as TPCB_PolygonSourceArray];
+	}
 	if (raw && Array.isArray(raw.polygon)) {
 		return [raw.polygon as TPCB_PolygonSourceArray];
 	}
@@ -456,6 +477,28 @@ export function differenceBBoxes(
 	clipBBoxes: BBox[],
 ): ComplexPolygons {
 	const subjectShape = bboxToShape([subjectBBox]);
+	const clipShape = bboxToShape(clipBBoxes);
+	console.log('=====================subjectShape====================');
+	console.log(subjectShape);
+	console.log('=====================clipShape====================');
+	console.log(clipShape);
+	const resultShape = clipBBoxes.length > 0 ? subjectShape.difference(clipShape) : subjectShape;
+	console.log('=====================resultShape====================');
+	console.log(resultShape);
+	const singleComplexPolygon = fromShapeAsSingleComplexPolygon(resultShape);
+	console.log('=====================singleComplexPolygon====================');
+	console.log(singleComplexPolygon);
+	if (singleComplexPolygon) {
+		return [singleComplexPolygon];
+	}
+	return fromShape(resultShape);
+}
+
+export function differenceComplexPolygonWithBBoxes(
+	subjectComplexPolygon: IPCB_ComplexPolygon,
+	clipBBoxes: BBox[],
+): ComplexPolygons {
+	const subjectShape = toShape([subjectComplexPolygon], true);
 	const clipShape = bboxToShape(clipBBoxes);
 	console.log('=====================subjectShape====================');
 	console.log(subjectShape);

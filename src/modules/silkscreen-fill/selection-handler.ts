@@ -30,8 +30,19 @@ export interface SelectionResult {
 	success: boolean;
 	/** 选区矩形 */
 	rect?: SelectionRect;
+	/** 选中的填充图元ID */
+	selectedFillIds?: string[];
+	/** 选中填充的源路径（IPCB_ComplexPolygon.getSource()，TPCB_PolygonSourceArray） */
+	selectionComplexPolygonSource?: TPCB_PolygonSourceArray;
 	/** 错误信息 */
 	error?: string;
+}
+
+const SELECTION_POLL_INTERVAL_MS = 300;
+const SELECTION_TIMEOUT_MS = 60_000;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -45,19 +56,32 @@ export interface SelectionResult {
  * @returns 选区结果
  */
 export async function waitForUserSelection(): Promise<SelectionResult> {
-	return new Promise((resolve) => {
-		try {
-			// 显示提示信息
-			const result = getCurrentSelection();
-			resolve(result);
+	try {
+		eda.sys_Dialog.showInformationMessage(
+			'请先在PCB中框选/选择一个填充区域，然后插件会自动继续计算。',
+			'请选择填充区域',
+		);
+
+		const start = Date.now();
+		while (Date.now() - start < SELECTION_TIMEOUT_MS) {
+			const result = await getCurrentSelection();
+			if (result.success && result.rect) {
+				return result;
+			}
+			await sleep(SELECTION_POLL_INTERVAL_MS);
 		}
-		catch (error) {
-			resolve({
-				success: false,
-				error: error instanceof Error ? error.message : '初始化框选失败',
-			});
-		}
-	});
+
+		return {
+			success: false,
+			error: '等待用户选择超时（60秒）',
+		};
+	}
+	catch (error) {
+		return {
+			success: false,
+			error: error instanceof Error ? error.message : '初始化框选失败',
+		};
+	}
 }
 
 /**
@@ -67,23 +91,46 @@ export async function waitForUserSelection(): Promise<SelectionResult> {
  */
 export async function getCurrentSelection(): Promise<SelectionResult> {
 	try {
-		const selectedPrimitives = await eda.pcb_SelectControl.getAllSelectedPrimitives();
+		const selectedPrimitivesId = await eda.pcb_SelectControl.getAllSelectedPrimitives_PrimitiveId();
 
-		if (!selectedPrimitives || selectedPrimitives.length === 0) {
+		if (!selectedPrimitivesId || selectedPrimitivesId.length === 0) {
 			return {
 				success: false,
 				error: '未选中任何对象',
 			};
 		}
-
-		// 获取选中图元的边界框
-		const bbox = await eda.pcb_Primitive.getPrimitivesBBox(selectedPrimitives);
-		console.warn('选中对象的边界框:', bbox);
-
-		if (!bbox) {
+		const selectedFills = await eda.pcb_PrimitiveFill.get(selectedPrimitivesId);
+		if (!selectedFills || selectedFills.length === 0) {
 			return {
 				success: false,
-				error: '无法获取选中对象的边界框',
+				error: '请选择一个填充图元作为填充区域',
+			};
+		}
+
+		const targetFill = selectedFills[0];
+		const selectedFillId = targetFill?.getState_PrimitiveId?.() || selectedPrimitivesId[0];
+		const selectionPoly = await targetFill?.getState_ComplexPolygon?.();
+		const bbox = await eda.pcb_Primitive.getPrimitivesBBox([selectedFillId]);
+
+		if (!selectionPoly || !bbox) {
+			return {
+				success: false,
+				error: '无法获取选中填充的复杂多边形或边界框',
+			};
+		}
+
+		const polyWithSource = selectionPoly as unknown as {
+			getSource?: () => TPCB_PolygonSourceArray | Promise<TPCB_PolygonSourceArray>;
+		};
+		const getSource = polyWithSource.getSource;
+		const polygonSource = typeof getSource === 'function'
+			? await Promise.resolve(getSource.call(polyWithSource))
+			: null;
+
+		if (!polygonSource || !Array.isArray(polygonSource) || polygonSource.length === 0) {
+			return {
+				success: false,
+				error: '无法从复杂多边形获取源路径（getSource）',
 			};
 		}
 
@@ -95,6 +142,8 @@ export async function getCurrentSelection(): Promise<SelectionResult> {
 				width: bbox.maxX - bbox.minX,
 				height: bbox.maxY - bbox.minY,
 			},
+			selectedFillIds: [selectedFillId],
+			selectionComplexPolygonSource: polygonSource as TPCB_PolygonSourceArray,
 		};
 	}
 	catch (error) {

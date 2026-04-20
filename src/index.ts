@@ -37,7 +37,7 @@ export async function silkscreenFill(): Promise<void> {
 
 		// 显示开始提示
 		eda.sys_Dialog.showInformationMessage(
-			'开始丝印层填充，请按照提示操作',
+			'开始丝印层填充。下一步请先在PCB中选择填充区域。',
 			'丝印层填充',
 		);
 
@@ -45,15 +45,8 @@ export async function silkscreenFill(): Promise<void> {
 		const result = await executeSilkscreenFill({
 			silkscreenLayerId: EPCB_LayerId.TOP_SILKSCREEN, // 顶层丝印层
 			fillLayerId: EPCB_LayerId.TOP_SILKSCREEN, // 填充到顶层丝印层
-			strokeWidth: 0.1, // 丝印线宽
 			fillMode: 'solid', // 实心填充
 		});
-
-		// 显示完成提示
-		eda.sys_Dialog.showInformationMessage(
-			`丝印层填充完成！\n成功创建 ${result.length} 个填充区域`,
-			'完成',
-		);
 
 		// eslint-disable-next-line no-console
 		console.log('丝印层填充完成，创建了', result.length, '个填充区域');

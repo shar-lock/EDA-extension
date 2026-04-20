@@ -22,13 +22,6 @@ export {
 } from './fill-generator';
 
 export {
-	getLayerPolygons,
-	getLayerPrimitives,
-	primitiveToPolygons,
-	type SilkscreenPrimitive,
-} from './layer-extractor';
-
-export {
 	getCurrentSelection,
 	type SelectionRect,
 	type SelectionResult,

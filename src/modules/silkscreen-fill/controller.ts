@@ -11,7 +11,7 @@
 import type { FillRegionConfig } from './fill-generator';
 import { createFilledRegions } from './fill-generator';
 import { selectionToPolygon, waitForUserSelection } from './selection-handler';
-import { differenceBBoxes } from './utils/clipper';
+import { differenceComplexPolygonWithBBoxes, registerComplexPolygonRawSource } from './utils/clipper';
 import {
 	captureError,
 	DIAGNOSTIC_MODE,
@@ -117,6 +117,11 @@ export async function executeSilkscreenFill(
 			diagnosticLog(errorMsg);
 			return [];
 		}
+		if (!selectionResult.selectionComplexPolygonSource) {
+			const errorMsg = '未获取到选中填充的复杂多边形信息';
+			diagnosticLog(errorMsg);
+			return [];
+		}
 
 		// 验证选区有效性
 		if (selectionResult.rect.width <= 0 || selectionResult.rect.height <= 0) {
@@ -127,6 +132,15 @@ export async function executeSilkscreenFill(
 
 		// eslint-disable-next-line no-console
 		console.log('选区边界:', selectionResult.rect);
+		const polygonSource = selectionResult.selectionComplexPolygonSource as TPCB_PolygonSourceArray;
+		const selectionComplexPolygon = eda.pcb_MathPolygon.createComplexPolygon(polygonSource);
+		if (!selectionComplexPolygon) {
+			throw new Error('选中填充的复杂多边形转换失败');
+		}
+		registerComplexPolygonRawSource(selectionComplexPolygon, polygonSource);
+		if (selectionResult.selectedFillIds && selectionResult.selectedFillIds.length > 0) {
+			await eda.pcb_PrimitiveFill.delete(selectionResult.selectedFillIds);
+		}
 		const selectionPolygon = selectionToPolygon(selectionResult.rect);
 		logPolygonInfo(selectionPolygon, '选区多边形');
 
@@ -208,11 +222,11 @@ export async function executeSilkscreenFill(
 		// 执行差集运算：选区 - 器件BBox
 		const polygonsToSubtract = componentBBoxes;
 		diagnosticLog('差集运算输入:', {
-			subjectCount: 1,
-			clipCount: polygonsToSubtract.length,
+			subjectCount: selectionComplexPolygon,
+			clipCount: polygonsToSubtract,
 		});
 		logPolygonInfo(selectionPolygon, '差集运算-subject');
-		const resultPolygons = differenceBBoxes(selectionBBox, polygonsToSubtract);
+		const resultPolygons = differenceComplexPolygonWithBBoxes(selectionComplexPolygon, polygonsToSubtract);
 		endTimer('step_difference', '差集运算耗时: ');
 		// eslint-disable-next-line no-console
 		console.log(`补集运算完成: ${resultPolygons.length} 个结果多边形`);
