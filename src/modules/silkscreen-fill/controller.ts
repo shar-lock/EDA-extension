@@ -29,6 +29,10 @@ export interface SilkscreenFillConfig {
 	silkscreenLayerId: number;
 	/** 填充层ID（默认与丝印层相同） */
 	fillLayerId: number;
+	/** 器件/位号避让距离（mil） */
+	clearanceMil: number;
+	/** 是否显示选区提示弹窗（默认 true） */
+	showSelectionPrompt: boolean;
 	/** 网络名称（可选） */
 	netName?: string;
 	/** 填充模式 */
@@ -43,6 +47,8 @@ export interface SilkscreenFillConfig {
 const DEFAULT_CONFIG: SilkscreenFillConfig = {
 	silkscreenLayerId: EPCB_LayerId.TOP_SILKSCREEN, // 顶层丝印层
 	fillLayerId: EPCB_LayerId.TOP_SILKSCREEN,
+	clearanceMil: 0,
+	showSelectionPrompt: true,
 	fillMode: 'solid',
 };
 
@@ -81,6 +87,10 @@ export async function executeSilkscreenFill(
 		&& !['solid', 'hatched'].includes(config.fillMode)) {
 		throw new Error(`无效的填充模式: ${config.fillMode}`);
 	}
+	if (config.clearanceMil !== undefined
+		&& (!Number.isFinite(config.clearanceMil) || config.clearanceMil < 0)) {
+		throw new Error(`无效的避让距离: ${config.clearanceMil}`);
+	}
 	// 启用诊断模式
 	if (DIAGNOSTIC_MODE.ENABLED) {
 		diagnosticLog('============ 丝印层填充-诊断模式启动 ============');
@@ -89,7 +99,7 @@ export async function executeSilkscreenFill(
 
 	const finalConfig: SilkscreenFillConfig = { ...DEFAULT_CONFIG, ...config };
 	startTimer('total_execution');
-
+	
 	// eslint-disable-next-line no-console
 	console.log('【丝印层填充-补集算法】开始执行');
 	// eslint-disable-next-line no-console
@@ -102,7 +112,9 @@ export async function executeSilkscreenFill(
 		// eslint-disable-next-line no-console
 		console.log('步骤1: 获取用户选区边界...');
 		startTimer('step_selection');
-		const selectionResult = await waitForUserSelection();
+		const selectionResult = await waitForUserSelection({
+			showPrompt: finalConfig.showSelectionPrompt,
+		});
 		endTimer('step_selection', '选区获取耗时: ');
 		diagnosticLog('选区结果:', selectionResult);
 
@@ -161,6 +173,7 @@ export async function executeSilkscreenFill(
 		const pcbData = await eda.pcb_PrimitiveComponent.getAll();
 		const components = pcbData || [];
 		const componentBBoxes: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = [];
+		const clearanceMil = finalConfig.clearanceMil;
 
 		const pushBBoxIfIntersects = (bbox: any): void => {
 			if (!bbox) {
@@ -180,7 +193,12 @@ export async function executeSilkscreenFill(
 			if (!intersects) {
 				return;
 			}
-			componentBBoxes.push({ minX: bboxMinX, minY: bboxMinY, maxX: bboxMaxX, maxY: bboxMaxY });
+			componentBBoxes.push({
+				minX: bboxMinX - clearanceMil,
+				minY: bboxMinY - clearanceMil,
+				maxX: bboxMaxX + clearanceMil,
+				maxY: bboxMaxY + clearanceMil,
+			});
 		};
 
 		for (const component of components) {
@@ -209,6 +227,29 @@ export async function executeSilkscreenFill(
 				diagnosticLog('获取器件BBox失败，跳过该器件', error);
 			}
 		}
+
+		// PCB 文本图元（PCB_PrimitiveString）：getAllPrimitiveId 取 ID，再取 bbox，与器件/位号同样参与避让与布尔差集
+		// https://prodocs.lceda.cn/cn/api/reference/pro-api.pcb_primitivestring.html
+		try {
+			const stringPrimitiveIds = await eda.pcb_PrimitiveString.getAllPrimitiveId();
+			const stringIds = Array.isArray(stringPrimitiveIds) ? stringPrimitiveIds : [];
+			for (const stringId of stringIds) {
+				if (!stringId) {
+					continue;
+				}
+				try {
+					const stringBBox = await eda.pcb_Primitive.getPrimitivesBBox([stringId]);
+					pushBBoxIfIntersects(stringBBox);
+				}
+				catch (stringErr) {
+					diagnosticLog('获取文本图元BBox失败，跳过该文本', stringErr);
+				}
+			}
+		}
+		catch (error) {
+			diagnosticLog('获取文本图元ID列表失败', error);
+		}
+
 		endTimer('step_extraction', '丝印提取耗时: ');
 
 		// eslint-disable-next-line no-console

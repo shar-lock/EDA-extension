@@ -38,6 +38,11 @@ export interface SelectionResult {
 	error?: string;
 }
 
+export interface WaitSelectionOptions {
+	/** 是否显示“请选择填充区域”提示窗口，默认 true */
+	showPrompt?: boolean;
+}
+
 const SELECTION_POLL_INTERVAL_MS = 300;
 const SELECTION_TIMEOUT_MS = 60_000;
 
@@ -55,12 +60,14 @@ function sleep(ms: number): Promise<void> {
  *
  * @returns 选区结果
  */
-export async function waitForUserSelection(): Promise<SelectionResult> {
+export async function waitForUserSelection(options: WaitSelectionOptions = {}): Promise<SelectionResult> {
 	try {
-		eda.sys_Dialog.showInformationMessage(
-			'请先在PCB中框选/选择一个填充区域，然后插件会自动继续计算。',
-			'请选择填充区域',
-		);
+		if (options.showPrompt !== false) {
+			eda.sys_Dialog.showInformationMessage(
+				'请先在PCB中框选/选择一个填充区域，然后插件会自动继续计算。',
+				'请选择填充区域',
+			);
+		}
 
 		const start = Date.now();
 		while (Date.now() - start < SELECTION_TIMEOUT_MS) {

@@ -1,11 +1,113 @@
 <!doctype html>
 <html lang="zh-Hans">
 	<head>
-		<title>Inner Frame</title>
+		<title>丝印层填充</title>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<style>
+			* {
+				box-sizing: border-box;
+			}
+			html,
+			body {
+				margin: 0;
+				width: 300px;
+				height: 150px;
+				overflow: hidden;
+				font:
+					12px/1.3 system-ui,
+					sans-serif;
+				color: #222;
+				background: #f5f5f5;
+			}
+			.wrap {
+				display: flex;
+				flex-direction: column;
+				height: 100%;
+				padding: 8px;
+				gap: 8px;
+			}
+			.row {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+			}
+			label {
+				flex: 0 0 auto;
+				white-space: nowrap;
+			}
+			#clearance {
+				flex: 1 1 auto;
+				min-width: 0;
+				padding: 4px 6px;
+				border: 1px solid #ccc;
+				border-radius: 2px;
+			}
+			.btns {
+				display: flex;
+				gap: 6px;
+				flex: 1 1 auto;
+				min-height: 0;
+			}
+			.btns button {
+				flex: 1 1 50%;
+				padding: 6px 4px;
+				font-size: 11px;
+				cursor: pointer;
+				border: 1px solid #bbb;
+				border-radius: 2px;
+				background: #fff;
+			}
+			.btns button:hover {
+				background: #eee;
+			}
+		</style>
 	</head>
 	<body>
-		<p>这是一个示例 IFrame 页面</p>
+		<div class="wrap">
+			<div class="row">
+				<label for="clearance">避让距离 (mil)</label>
+				<input id="clearance" type="number" min="0" step="0.1" value="0" />
+			</div>
+			<div class="btns">
+				<button id="btn-resel" type="button" title="重新在 PCB 中选择填充区域后执行填充">
+					重新选区填充
+				</button>
+				<button id="btn-clearance" type="button" title="使用当前输入的避让距离再次执行填充">
+					按避让重填
+				</button>
+			</div>
+		</div>
+		<script>
+			(function () {
+				var TOPIC = 'silkscreen-fill:iframe-action';
+				var COOLDOWN_MS = 500;
+				var lastClickAt = 0;
+
+				function send(action) {
+					var now = Date.now();
+					if (now - lastClickAt < COOLDOWN_MS) {
+						return;
+					}
+					lastClickAt = now;
+					var el = document.getElementById('clearance');
+					var clearanceMil = el ? el.value : '0';
+					var payload = {
+						action: action,
+						clearanceMil: clearanceMil,
+					};
+					if (window.eda && window.eda.sys_MessageBus) {
+						window.eda.sys_MessageBus.publishPublic(TOPIC, payload);
+					}
+				}
+
+				document.getElementById('btn-resel').addEventListener('click', function () {
+					send('resel');
+				});
+				document.getElementById('btn-clearance').addEventListener('click', function () {
+					send('clearance');
+				});
+			})();
+		</script>
 	</body>
 </html>

@@ -499,12 +499,16 @@ export function differenceComplexPolygonWithBBoxes(
 	clipBBoxes: BBox[],
 ): ComplexPolygons {
 	const subjectShape = toShape([subjectComplexPolygon], true);
-	const clipShape = bboxToShape(clipBBoxes);
 	console.log('=====================subjectShape====================');
 	console.log(subjectShape);
-	console.log('=====================clipShape====================');
-	console.log(clipShape);
-	const resultShape = clipBBoxes.length > 0 ? subjectShape.difference(clipShape) : subjectShape;
+	let resultShape = subjectShape;
+	// 逐个执行差集，避免多个重叠 clip 矩形在一次布尔中出现偶奇抵消
+	for (const bbox of clipBBoxes) {
+		const singleClipShape = bboxToShape([bbox]);
+		resultShape = resultShape.difference(singleClipShape);
+	}
+	console.log('=====================clipBBoxes====================');
+	console.log(clipBBoxes);
 	console.log('=====================resultShape====================');
 	console.log(resultShape);
 	const singleComplexPolygon = fromShapeAsSingleComplexPolygon(resultShape);
